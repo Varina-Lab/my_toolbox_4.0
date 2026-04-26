@@ -1,0 +1,19 @@
+[package]
+name = "portable_run"
+version = "0.1.0"
+edition = "2021"
+
+[profile.release]
+opt-level = "z"     # Tối ưu hóa kích thước file (có thể đổi thành "3" nếu muốn ưu tiên tốc độ)
+lto = true          # Link-time optimization (Ép file nhỏ và chạy nhanh hơn)
+codegen-units = 1   # Biên dịch đơn luồng để tối ưu LTO tốt nhất
+panic = "abort"     # Xóa overhead của stack unwinding khi lỗi
+strip = true        # Xóa toàn bộ debug symbols
+
+[dependencies]
+winreg = "0.52"
+dialoguer = "0.11"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+junction = "1.0"
+dirs = "5.0"
