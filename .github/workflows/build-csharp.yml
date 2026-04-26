@@ -1,0 +1,32 @@
+name: Build C# Tool
+on:
+  workflow_dispatch:
+    inputs:
+      tool_name:
+        description: 'Tên thư mục tool trong csharp/'
+        required: true
+        default: '_template'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+          
+      - name: Publish Native AOT EXE
+        working-directory: csharp/${{ github.event.inputs.tool_name }}
+        run: dotnet publish -c Release -r win-x64 -o ./out
+        
+      - name: Rename EXE
+        working-directory: csharp/${{ github.event.inputs.tool_name }}
+        run: Get-ChildItem ./out/*.exe | Rename-Item -NewName "${{ github.event.inputs.tool_name }}.exe"
+        
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.tool_name }}_csharp_amd64.exe
+          path: csharp/${{ github.event.inputs.tool_name }}/out/${{ github.event.inputs.tool_name }}.exe
