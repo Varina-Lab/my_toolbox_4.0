@@ -12,16 +12,17 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      
       - name: Setup Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: 'pip' # Bộ nhớ đệm giúp tải thư viện nhanh hơn
 
       - name: Install Nuitka and Dependencies
         working-directory: python/${{ github.event.inputs.tool_name }}
         run: |
           pip install nuitka
+          # Lệnh này sẽ kiểm tra xem nếu CÓ file requirements.txt thì mới cài, KHÔNG CÓ thì bỏ qua rất an toàn
           if (Test-Path requirements.txt) { pip install -r requirements.txt }
           
       - name: Compile Standalone EXE with Nuitka
