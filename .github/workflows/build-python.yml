@@ -1,0 +1,35 @@
+name: Build Python Tool
+on:
+  workflow_dispatch:
+    inputs:
+      tool_name:
+        description: 'Tên thư mục tool trong python/'
+        required: true
+        default: '_template'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip' # Bộ nhớ đệm giúp tải thư viện nhanh hơn
+
+      - name: Install Nuitka and Dependencies
+        working-directory: python/${{ github.event.inputs.tool_name }}
+        run: |
+          pip install nuitka
+          if (Test-Path requirements.txt) { pip install -r requirements.txt }
+          
+      - name: Compile Standalone EXE with Nuitka
+        working-directory: python/${{ github.event.inputs.tool_name }}
+        run: python -m nuitka --onefile --standalone -o "${{ github.event.inputs.tool_name }}.exe" main.py
+        
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.tool_name }}_python_amd64.exe
+          path: python/${{ github.event.inputs.tool_name }}/${{ github.event.inputs.tool_name }}.exe
