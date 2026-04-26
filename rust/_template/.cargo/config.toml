@@ -1,0 +1,3 @@
+[build]
+# Ép liên kết tĩnh C-Runtime, file exe sinh ra sẽ chạy được trên mọi máy Windows
+rustflags = ["-C", "target-feature=+crt-static"]
