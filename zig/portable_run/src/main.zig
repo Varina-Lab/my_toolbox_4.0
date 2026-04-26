@@ -178,7 +178,8 @@ pub fn main() !void {
 
 fn learningMode(engine: *Engine, allocator: std.mem.Allocator) !void {
     var exes = std.ArrayList([]const u8).init(allocator);
-    var dir = try std.fs.cwd().openIterableDir(".", .{});
+    // ĐÃ SỬA: Dùng openDir kèm cờ iterate = true theo chuẩn Zig 0.13.0
+    var dir = try std.fs.cwd().openDir(".", .{ .iterate = true });
     defer dir.close();
 
     var it = dir.iterate();
@@ -370,7 +371,8 @@ fn snapshotFolders(engine: *Engine, set: *std.StringHashMap(void), allocator: st
         const root = engine.getSysRoot(tag) catch continue;
         if (root.len == 0) continue;
 
-        var dir = std.fs.cwd().openIterableDir(root, .{}) catch continue;
+        // ĐÃ SỬA: Dùng openDir kèm cờ iterate = true
+        var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch continue;
         defer dir.close();
 
         var it = dir.iterate();
