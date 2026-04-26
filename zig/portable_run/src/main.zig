@@ -1,37 +1,37 @@
 const std = @import("std");
 const windows = std.os.windows;
 
-// --- Win32 API Definitions ---
-extern "user32" fn MessageBoxA(hWnd: ?windows.HWND, lpText: [*:0]const u8, lpCaption: [*:0]const u8, uType: c_uint) callconv(.C) c_int;
-extern "comdlg32" fn GetOpenFileNameA(lpofn: *OPENFILENAMEA) callconv(.C) windows.BOOL;
-extern "kernel32" fn SetEnvironmentVariableA(lpName: [*:0]const u8, lpValue: [*:0]const u8) callconv(.C) windows.BOOL;
+// --- Win32 API (Phiên bản W - Hỗ trợ Unicode 100%) ---
+extern "user32" fn MessageBoxW(hWnd: ?windows.HWND, lpText: [*:0]const u16, lpCaption: [*:0]const u16, uType: c_uint) callconv(.C) c_int;
+extern "comdlg32" fn GetOpenFileNameW(lpofn: *OPENFILENAMEW) callconv(.C) windows.BOOL;
+extern "kernel32" fn SetEnvironmentVariableW(lpName: [*:0]const u16, lpValue: [*:0]const u16) callconv(.C) windows.BOOL;
 
 const MB_YESNO: c_uint = 4;
 const MB_ICONQUESTION: c_uint = 32;
 const MB_ICONERROR: c_uint = 16;
 const IDYES: c_int = 6;
 
-const OPENFILENAMEA = extern struct {
+const OPENFILENAMEW = extern struct {
     lStructSize: windows.DWORD,
     hwndOwner: ?windows.HWND,
     hInstance: ?windows.HINSTANCE,
-    lpstrFilter: ?[*:0]const u8,
-    lpstrCustomFilter: ?[*:0]u8,
+    lpstrFilter: ?[*:0]const u16,
+    lpstrCustomFilter: ?[*:0]u16,
     nMaxCustFilter: windows.DWORD,
     nFilterIndex: windows.DWORD,
-    lpstrFile: ?[*:0]u8,
+    lpstrFile: ?[*:0]u16,
     nMaxFile: windows.DWORD,
-    lpstrFileTitle: ?[*:0]u8,
+    lpstrFileTitle: ?[*:0]u16,
     nMaxFileTitle: windows.DWORD,
-    lpstrInitialDir: ?[*:0]const u8,
-    lpstrTitle: ?[*:0]const u8,
+    lpstrInitialDir: ?[*:0]const u16,
+    lpstrTitle: ?[*:0]const u16,
     Flags: windows.DWORD,
     nFileOffset: windows.WORD,
     nFileExtension: windows.WORD,
-    lpstrDefExt: ?[*:0]const u8,
+    lpstrDefExt: ?[*:0]const u16,
     lCustData: windows.LPARAM,
     lpfnHook: ?*const anyopaque,
-    lpTemplateName: ?[*:0]const u8,
+    lpTemplateName: ?[*:0]const u16,
     pvReserved: ?*anyopaque,
     dwReserved: windows.DWORD,
     FlagsEx: windows.DWORD,
@@ -83,10 +83,10 @@ const Engine = struct {
         try std.fs.cwd().makePath(local);
         try std.fs.cwd().makePath(docs);
 
-        _ = SetEnvironmentVariableA("APPDATA", try self.allocator.dupeZ(u8, roam));
-        _ = SetEnvironmentVariableA("LOCALAPPDATA", try self.allocator.dupeZ(u8, local));
-        _ = SetEnvironmentVariableA("USERPROFILE", try self.allocator.dupeZ(u8, self.p_data));
-        _ = SetEnvironmentVariableA("DOCUMENTS", try self.allocator.dupeZ(u8, docs));
+        try setEnvW(self.allocator, "APPDATA", roam);
+        try setEnvW(self.allocator, "LOCALAPPDATA", local);
+        try setEnvW(self.allocator, "USERPROFILE", self.p_data);
+        try setEnvW(self.allocator, "DOCUMENTS", docs);
     }
 
     pub fn getSysRoot(self: *const Engine, tag: []const u8) ![]const u8 {
@@ -104,26 +104,48 @@ const Engine = struct {
     }
 };
 
+// --- Helper chuyển đổi UTF-8 sang UTF-16LE cho Windows ---
+fn setEnvW(allocator: std.mem.Allocator, name: []const u8, value: []const u8) !void {
+    const name_w = try std.unicode.utf8ToUtf16LeAllocZ(allocator, name);
+    defer allocator.free(name_w);
+    const value_w = try std.unicode.utf8ToUtf16LeAllocZ(allocator, value);
+    defer allocator.free(value_w);
+    _ = SetEnvironmentVariableW(name_w.ptr, value_w.ptr);
+}
+
 fn askYesNo(allocator: std.mem.Allocator, title: []const u8, msg: []const u8) bool {
-    const msg_z = allocator.dupeZ(u8, msg) catch return false;
-    const title_z = allocator.dupeZ(u8, title) catch return false;
-    return MessageBoxA(null, msg_z, title_z, MB_YESNO | MB_ICONQUESTION) == IDYES;
+    const title_w = std.unicode.utf8ToUtf16LeAllocZ(allocator, title) catch return false;
+    defer allocator.free(title_w);
+    const msg_w = std.unicode.utf8ToUtf16LeAllocZ(allocator, msg) catch return false;
+    defer allocator.free(msg_w);
+    return MessageBoxW(null, msg_w.ptr, title_w.ptr, MB_YESNO | MB_ICONQUESTION) == IDYES;
+}
+
+fn showError(allocator: std.mem.Allocator, msg: []const u8) void {
+    if (std.unicode.utf8ToUtf16LeAllocZ(allocator, msg)) |msg_w| {
+        defer allocator.free(msg_w);
+        const title_w = std.unicode.utf8ToUtf16LeAllocZ(allocator, "Application Error") catch return;
+        defer allocator.free(title_w);
+        _ = MessageBoxW(null, msg_w.ptr, title_w.ptr, MB_ICONERROR);
+    } else |_| {}
 }
 
 fn pickExe(allocator: std.mem.Allocator) ![]const u8 {
-    var filename_buf = [_:0]u8{0} ** 260;
-    var ofn = std.mem.zeroes(OPENFILENAMEA);
-    ofn.lStructSize = @sizeOf(OPENFILENAMEA);
+    var filename_buf = [_:0]u16{0} ** 260;
+    var ofn = std.mem.zeroes(OPENFILENAMEW);
+    ofn.lStructSize = @sizeOf(OPENFILENAMEW);
     ofn.lpstrFile = &filename_buf;
     ofn.nMaxFile = 260;
-    const filter = "Executables\x00*.exe\x00\x00";
-    ofn.lpstrFilter = filter;
-    // Thêm OFN_NOCHANGEDIR để Hộp thoại không tự đổi thư mục hiện tại của tiến trình
-    ofn.Flags = 0x00001000 | 0x00000004 | 0x00000008; 
-    ofn.lpstrTitle = "Select the Application to make Portable";
+    
+    const filter = [_:0]u16{ 'E','x','e','c','u','t','a','b','l','e','s', 0, '*','.','e','x','e', 0, 0 };
+    ofn.lpstrFilter = &filter;
+    const title = [_:0]u16{ 'S','e','l','e','c','t',' ','E','X','E', 0 };
+    ofn.lpstrTitle = &title;
+    ofn.Flags = 0x00001000 | 0x00000004 | 0x00000008; // OFN_NOCHANGEDIR
 
-    if (GetOpenFileNameA(&ofn) != 0) {
-        return try allocator.dupe(u8, std.mem.sliceTo(&filename_buf, 0));
+    if (GetOpenFileNameW(&ofn) != 0) {
+        const len = std.mem.indexOfScalar(u16, &filename_buf, 0) orelse 0;
+        return try std.unicode.utf16LeToUtf8Alloc(allocator, filename_buf[0..len]);
     }
     return error.Cancelled;
 }
@@ -147,23 +169,21 @@ fn containsNoise(name: []const u8) bool {
 }
 
 // =====================================================================
-// LƯỚI BẮT LỖI TOÀN CẦU (GLOBAL ERROR HANDLER)
-// Ngăn chặn "cái chết im lặng", hiển thị Popup nếu có lỗi xảy ra!
+// ENTRY POINT & LƯỚI BẮT LỖI
 // =====================================================================
 pub fn main() void {
-    mainImpl() catch |err| {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    
+    mainImpl(arena.allocator()) catch |err| {
+        if (err == error.Cancelled) return;
         var buf: [256]u8 = undefined;
-        // Bắt lỗi và in ra MessageBox
-        const msg = std.fmt.bufPrintZ(&buf, "Program Crashed!\nError Code: {any}", .{err}) catch "Fatal Error!";
-        _ = MessageBoxA(null, msg, "Critical Error", MB_ICONERROR);
+        const err_msg = std.fmt.bufPrint(&buf, "Crashed with error: {any}", .{err}) catch "Fatal Error!";
+        showError(arena.allocator(), err_msg);
     };
 }
 
-fn mainImpl() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
+fn mainImpl(allocator: std.mem.Allocator) !void {
     var engine = try Engine.init(allocator);
 
     if (std.fs.cwd().openFile(engine.cfg_file, .{})) |file| {
@@ -199,9 +219,9 @@ fn learningMode(engine: *Engine, allocator: std.mem.Allocator) !void {
     if (exes.items.len == 1) {
         selected_exe = exes.items[0];
     } else if (exes.items.len > 1) {
-        selected_exe = pickExe(allocator) catch return; 
+        selected_exe = try pickExe(allocator); 
     } else {
-        _ = MessageBoxA(null, "No target executable found in the directory!", "Error", MB_ICONERROR);
+        showError(allocator, "No target executable found in the directory!");
         return;
     }
 
@@ -214,11 +234,9 @@ fn learningMode(engine: *Engine, allocator: std.mem.Allocator) !void {
 
     try engine.setupEnv();
 
-    // ĐÃ SỬA: Ép đường dẫn thành ./app.exe để chạy an toàn
-    const run_path = try std.fs.path.join(allocator, &[_][]const u8{ ".", selected_exe });
-    var child = std.process.Child.init(&[_][]const u8{run_path}, allocator);
+    // ĐÃ SỬA: Truyền thẳng selected_exe vào, không dùng path.join(".") nữa để tránh hỏng đường dẫn tuyệt đối!
+    var child = std.process.Child.init(&[_][]const u8{selected_exe}, allocator);
     _ = try child.spawnAndWait();
-    std.time.sleep(1 * std.time.ns_per_s);
 
     var reg_after = std.StringHashMap(void).init(allocator);
     try snapshotRegistry(&reg_after, allocator);
@@ -229,7 +247,7 @@ fn learningMode(engine: *Engine, allocator: std.mem.Allocator) !void {
     var reg_it = reg_after.keyIterator();
     while (reg_it.next()) |key| {
         if (!reg_before.contains(key.*) and !containsNoise(key.*)) {
-            const msg = try std.fmt.allocPrintZ(allocator, "Found new Registry Key:\n{s}\n\nDo you want to make it portable?", .{key.*});
+            const msg = try std.fmt.allocPrint(allocator, "Found new Registry Key:\n{s}\n\nDo you want to make it portable?", .{key.*});
             if (askYesNo(allocator, "Registry Detected", msg)) {
                 try selected_reg.append(key.*);
             }
@@ -244,7 +262,7 @@ fn learningMode(engine: *Engine, allocator: std.mem.Allocator) !void {
             const tag = split.next().?;
             const name = split.next().?;
             
-            const msg = try std.fmt.allocPrintZ(allocator, "Found new Folder in [{s}]:\n{s}\n\nDo you want to make it portable?", .{tag, name});
+            const msg = try std.fmt.allocPrint(allocator, "Found new Folder in [{s}]:\n{s}\n\nDo you want to make it portable?", .{tag, name});
             if (askYesNo(allocator, "Folder Detected", msg)) {
                 const origin = try std.fs.path.join(allocator, &[_][]const u8{ try engine.getSysRoot(tag), name });
                 const dest = try std.fs.path.join(allocator, &[_][]const u8{ engine.p_data, tag, name });
@@ -283,9 +301,8 @@ fn runSandbox(engine: *Engine, config: AppConfig) !void {
 
     try engine.setupEnv();
 
-    // ĐÃ SỬA: Ép đường dẫn thành ./app.exe
-    const run_path = try std.fs.path.join(engine.allocator, &[_][]const u8{ ".", config.selected_exe });
-    var child = std.process.Child.init(&[_][]const u8{run_path}, engine.allocator);
+    // ĐÃ SỬA: Chạy thẳng EXE từ config (đã là UTF-8 sạch)
+    var child = std.process.Child.init(&[_][]const u8{config.selected_exe}, engine.allocator);
     _ = try child.spawnAndWait();
 
     for (junctions.items) |j| {
@@ -315,7 +332,8 @@ fn snapshotFolders(engine: *Engine, set: *std.StringHashMap(void), allocator: st
 }
 
 fn snapshotRegistry(set: *std.StringHashMap(void), allocator: std.mem.Allocator) !void {
-    var child = std.process.Child.init(&[_][]const u8{ "reg", "query", "HKCU\\Software" }, allocator);
+    // ĐÃ SỬA: Dùng chcp 65001 ép cmd xuất kết quả UTF-8, chấm dứt hoàn toàn hiện tượng Mojibake khi đọc Registry!
+    var child = std.process.Child.init(&[_][]const u8{ "cmd", "/c", "chcp 65001 >nul & reg query HKCU\\Software" }, allocator);
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Ignore;
     
@@ -338,7 +356,7 @@ fn syncRegistry(engine: *Engine, allocator: std.mem.Allocator, keys: [][]const u
     const temp_reg = try std.fs.path.join(allocator, &[_][]const u8{ std.fs.path.dirname(engine.reg_backup).?, "port_tmp.reg" });
     
     for (keys) |key| {
-        try runSilentCmd(allocator, &[_][]const u8{ "reg", "export", key, temp_reg, "/y" });
+        try runSilentCmd(allocator, &[_][]const u8{ "cmd", "/c", "chcp 65001 >nul & reg", "export", key, temp_reg, "/y" });
         if (std.fs.cwd().openFile(temp_reg, .{}) catch null) |file| {
             const content = try file.readToEndAlloc(allocator, 1024 * 1024);
             file.close();
