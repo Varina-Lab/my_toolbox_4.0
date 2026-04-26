@@ -1,0 +1,26 @@
+name: Build C++ Tool
+on:
+  workflow_dispatch:
+    inputs:
+      tool_name:
+        description: 'Tên thư mục tool trong cpp/'
+        required: true
+        default: '_template'
+
+jobs:
+  build:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup MSVC Compiler
+        uses: ilammy/msvc-dev-cmd@v1
+      
+      - name: Build Standalone EXE
+        working-directory: cpp/${{ github.event.inputs.tool_name }}
+        run: cl.exe /O1 /MT /EHsc /GL main.cpp /Fe"${{ github.event.inputs.tool_name }}.exe"
+        
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.tool_name }}_cpp_amd64.exe
+          path: cpp/${{ github.event.inputs.tool_name }}/${{ github.event.inputs.tool_name }}.exe
