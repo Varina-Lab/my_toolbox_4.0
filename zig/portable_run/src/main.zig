@@ -2,16 +2,18 @@ const std = @import("std");
 const windows = std.os.windows;
 
 // --- Win32 API Definitions ---
-extern "kernel32" fn SetEnvironmentVariableA(lpName: [*:0]const u8, lpValue: [*:0]const u8) callconv(.C) windows.BOOL;
-extern "kernel32" fn GetConsoleWindow() callconv(.C) windows.HWND;
+extern "kernel32" fn GetConsoleWindow() callconv(.C) ?windows.HWND;
 extern "kernel32" fn GetCurrentThreadId() callconv(.C) windows.DWORD;
 extern "kernel32" fn AllocConsole() callconv(.C) windows.BOOL;
 extern "user32" fn ShowWindow(hWnd: windows.HWND, nCmdShow: i32) callconv(.C) windows.BOOL;
 extern "user32" fn SetForegroundWindow(hWnd: windows.HWND) callconv(.C) windows.BOOL;
-extern "user32" fn GetForegroundWindow() callconv(.C) windows.HWND;
+extern "user32" fn GetForegroundWindow() callconv(.C) ?windows.HWND;
 extern "user32" fn GetWindowThreadProcessId(hWnd: windows.HWND, lpdwProcessId: ?*windows.DWORD) callconv(.C) windows.DWORD;
 extern "user32" fn AttachThreadInput(idAttach: windows.DWORD, idAttachTo: windows.DWORD, fAttach: windows.BOOL) callconv(.C) windows.BOOL;
 extern "user32" fn AllowSetForegroundWindow(dwProcessId: windows.DWORD) callconv(.C) windows.BOOL;
+
+// Nếu bạn đã thêm extern SetEnvironmentVariableA ở bước trước, hãy giữ nguyên nó ở đây:
+extern "kernel32" fn SetEnvironmentVariableA(lpName: [*:0]const u8, lpValue: [*:0]const u8) callconv(.C) windows.BOOL;
 
 const NOISE_KEYWORDS = [_][]const u8{
     "microsoft", "windows", "nvidia", "amd", "intel", "realtek", "cache",
@@ -32,29 +34,31 @@ const AppConfig = struct {
 
 // --- Win API Helpers ---
 fn hideConsole() void {
-    const hwnd = GetConsoleWindow();
-    if (hwnd != null) {
+    // Zig style: Nếu lấy được hwnd (không null) thì mới chạy
+    if (GetConsoleWindow()) |hwnd| {
         _ = ShowWindow(hwnd, 0); // SW_HIDE
     }
 }
 
 fn focusConsole() void {
     _ = AllocConsole();
-    const hwnd = GetConsoleWindow();
-    if (hwnd != null) {
-        const fg_hwnd = GetForegroundWindow();
+    if (GetConsoleWindow()) |hwnd| {
+        var fg_thread: windows.DWORD = 0;
+        if (GetForegroundWindow()) |fg_hwnd| {
+            fg_thread = GetWindowThreadProcessId(fg_hwnd, null);
+        }
+        
         const current_thread = GetCurrentThreadId();
-        const fg_thread = GetWindowThreadProcessId(fg_hwnd, null);
-
         var attached: bool = false;
+        
         if (fg_thread != current_thread and fg_thread != 0) {
             attached = AttachThreadInput(fg_thread, current_thread, windows.TRUE) != 0;
         }
-
+        
         _ = ShowWindow(hwnd, 2); // SW_SHOWMINIMIZED
         _ = ShowWindow(hwnd, 9); // SW_RESTORE
         _ = SetForegroundWindow(hwnd);
-
+        
         if (attached) {
             _ = AttachThreadInput(fg_thread, current_thread, windows.FALSE);
         }
@@ -406,7 +410,8 @@ fn syncRegistry(engine: *Engine, allocator: std.mem.Allocator, keys: [][]const u
     for (keys) |key| {
         try runCmdNoWindow(allocator, &[_][]const u8{ "reg", "export", key, temp_reg, "/y" });
         
-        if (std.fs.cwd().openFile(temp_reg, .{})) |file| {
+        // ĐÃ SỬA: Thêm "catch null" để convert từ Error Union sang Optional
+        if (std.fs.cwd().openFile(temp_reg, .{}) catch null) |file| {
             const content = try file.readToEndAlloc(allocator, 1024 * 1024);
             file.close();
             
