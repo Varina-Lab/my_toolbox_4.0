@@ -3,7 +3,6 @@ const std = @import("std");
 pub fn main() !void {
     const limit: usize = 10_000_000;
     
-    // Dùng ArenaAllocator để cấp phát bộ nhớ cực nhanh
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -38,7 +37,6 @@ pub fn main() !void {
     try stdout.print("Thoi gian chay: {d} ms\n", .{ end_time - start_time });
     
     try stdout.print("Nhan Enter de thoat...\n", .{});
-    // Sửa lại hàm chờ người dùng bấm Enter cho chuẩn xác trên Windows
     var buf: [1024]u8 = undefined;
     _ = try std.io.getStdIn().reader().readUntilDelimiterOrEof(&buf, '\n');
 }
