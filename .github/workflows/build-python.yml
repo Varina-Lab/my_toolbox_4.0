@@ -21,13 +21,13 @@ jobs:
       - name: Install Nuitka and Dependencies
         working-directory: python/${{ github.event.inputs.tool_name }}
         run: |
-          pip install nuitka
-          # Lệnh này sẽ kiểm tra xem nếu CÓ file requirements.txt thì mới cài, KHÔNG CÓ thì bỏ qua rất an toàn
+          # Cài đặt Nuitka kèm theo module nén zstandard cho file exe
+          pip install "nuitka[onefile]"
           if (Test-Path requirements.txt) { pip install -r requirements.txt }
           
       - name: Compile Standalone EXE with Nuitka
         working-directory: python/${{ github.event.inputs.tool_name }}
-        run: python -m nuitka --onefile --standalone -o "${{ github.event.inputs.tool_name }}.exe" main.py
+        run: python -m nuitka --onefile --standalone --assume-yes-for-downloads -o "${{ github.event.inputs.tool_name }}.exe" main.py
         
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
