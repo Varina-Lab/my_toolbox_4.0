@@ -315,9 +315,11 @@ fn runSandbox(engine: *Engine, config: AppConfig) !void {
         return;
     }
 
-    // Import registry
-    if (std.fs.cwd().access(engine.reg_backup, .{}) catch false) {
+    // [ĐÃ SỬA] Import registry: Bắt lỗi chuẩn của Zig
+    if (std.fs.cwd().access(engine.reg_backup, .{})) {
         try runCmdNoWindow(engine.allocator, &[_][]const u8{ "reg", "import", engine.reg_backup });
+    } else |_| {
+        // File không tồn tại, bỏ qua
     }
 
     // Tạo Junction (Symlink)
@@ -327,10 +329,15 @@ fn runSandbox(engine: *Engine, config: AppConfig) !void {
         const origin = try std.fs.path.join(engine.allocator, &[_][]const u8{ sys_root, f.name });
         const dest = try engine.mapPortPath(f.tag, f.name);
 
-        if (std.fs.cwd().access(origin, .{}) == error.FileNotFound) {
-            // cmd /c mklink /J "origin" "dest"
-            try runCmdNoWindow(engine.allocator, &[_][]const u8{ "cmd", "/c", "mklink", "/J", origin, dest });
-            try junctions.append(origin);
+        // [ĐÃ SỬA] Kiểm tra FileNotFound chuẩn Zig 0.13.0
+        if (std.fs.cwd().access(origin, .{})) {
+            // Thư mục đã tồn tại, không làm gì cả
+        } else |err| {
+            if (err == error.FileNotFound) {
+                // cmd /c mklink /J "origin" "dest"
+                try runCmdNoWindow(engine.allocator, &[_][]const u8{ "cmd", "/c", "mklink", "/J", origin, dest });
+                try junctions.append(origin);
+            }
         }
     }
 
@@ -349,6 +356,7 @@ fn runSandbox(engine: *Engine, config: AppConfig) !void {
 
     try syncRegistry(engine, engine.allocator, config.registry_keys);
 }
+
 
 // --- Helpers Logic ---
 
