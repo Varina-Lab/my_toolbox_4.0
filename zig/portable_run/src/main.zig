@@ -2,6 +2,7 @@ const std = @import("std");
 const windows = std.os.windows;
 
 // --- Win32 API Definitions ---
+extern "kernel32" fn SetEnvironmentVariableA(lpName: [*:0]const u8, lpValue: [*:0]const u8) callconv(.C) windows.BOOL;
 extern "kernel32" fn GetConsoleWindow() callconv(.C) windows.HWND;
 extern "kernel32" fn GetCurrentThreadId() callconv(.C) windows.DWORD;
 extern "kernel32" fn AllocConsole() callconv(.C) windows.BOOL;
@@ -72,8 +73,7 @@ const Engine = struct {
     reg_backup: []const u8,
 
     pub fn init(allocator: std.mem.Allocator) !Engine {
-        var cwd_buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
-        const cwd = try std.os.getwd(&cwd_buf);
+        const cwd = try std.process.getCwdAlloc(allocator);
         const p_data = try std.fs.path.join(allocator, &[_][]const u8{ cwd, "Portable_Data" });
         
         const config_dir = try std.fs.path.join(allocator, &[_][]const u8{ p_data, "config" });
@@ -101,21 +101,22 @@ const Engine = struct {
         try std.fs.cwd().makePath(local);
         try std.fs.cwd().makePath(docs);
 
-        try std.posix.setenv("APPDATA", roam);
-        try std.posix.setenv("LOCALAPPDATA", local);
-        try std.posix.setenv("USERPROFILE", self.p_data);
-        try std.posix.setenv("DOCUMENTS", docs);
+        // ĐÃ SỬA: Chuyển đổi thành string null-terminated (C-String) và gọi Win32 API
+        _ = SetEnvironmentVariableA("APPDATA", try self.allocator.dupeZ(u8, roam));
+        _ = SetEnvironmentVariableA("LOCALAPPDATA", try self.allocator.dupeZ(u8, local));
+        _ = SetEnvironmentVariableA("USERPROFILE", try self.allocator.dupeZ(u8, self.p_data));
+        _ = SetEnvironmentVariableA("DOCUMENTS", try self.allocator.dupeZ(u8, docs));
     }
     
     pub fn getSysRoot(self: *const Engine, tag: []const u8) ![]const u8 {
-        if (std.mem.eql(u8, tag, "ROAM")) return std.posix.getenv("APPDATA") orelse "";
-        if (std.mem.eql(u8, tag, "LOCAL")) return std.posix.getenv("LOCALAPPDATA") orelse "";
+        if (std.mem.eql(u8, tag, "ROAM")) return std.process.getEnvVarOwned(self.allocator, "APPDATA") catch "";
+        if (std.mem.eql(u8, tag, "LOCAL")) return std.process.getEnvVarOwned(self.allocator, "LOCALAPPDATA") catch "";
         if (std.mem.eql(u8, tag, "LOW")) {
-            const local = std.posix.getenv("LOCALAPPDATA") orelse return "";
+            const local = std.process.getEnvVarOwned(self.allocator, "LOCALAPPDATA") catch return "";
             return try std.fs.path.join(self.allocator, &[_][]const u8{ std.fs.path.dirname(local).?, "LocalLow" });
         }
         if (std.mem.eql(u8, tag, "DOCS")) {
-            const profile = std.posix.getenv("USERPROFILE") orelse return "";
+            const profile = std.process.getEnvVarOwned(self.allocator, "USERPROFILE") catch return "";
             return try std.fs.path.join(self.allocator, &[_][]const u8{ profile, "Documents" });
         }
         return "";
