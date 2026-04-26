@@ -414,6 +414,8 @@ fn syncRegistry(engine: *Engine, allocator: std.mem.Allocator, keys: [][]const u
 }
 
 fn saveConfig(engine: *Engine, allocator: std.mem.Allocator, exe: []const u8, reg: [][]const u8, folders: []StubbornFolder) !void {
+    _ = allocator; // <--- THÊM DÒNG NÀY ĐỂ BỎ QUA LỖI UNUSED
+
     const config = AppConfig{
         .selected_exe = exe,
         .registry_keys = reg,
@@ -427,6 +429,8 @@ fn saveConfig(engine: *Engine, allocator: std.mem.Allocator, exe: []const u8, re
 }
 
 fn parseMultiSelect(allocator: std.mem.Allocator, source: anytype, target_list: anytype) !void {
+    _ = allocator; // <--- THÊM DÒNG NÀY ĐỂ BỎ QUA LỖI UNUSED
+
     var input_buf: [256]u8 = undefined;
     const stdin = std.io.getStdIn().reader();
     if (try stdin.readUntilDelimiterOrEof(&input_buf, '\n')) |line| {
