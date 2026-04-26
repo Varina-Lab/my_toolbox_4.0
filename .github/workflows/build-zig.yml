@@ -16,11 +16,13 @@ jobs:
         uses: mlugg/setup-zig@v1
         with:
           version: '0.13.0'
-      - name: Build Standalone EXE (ReleaseSmall)
+      - name: Build and Rename EXE
         working-directory: zig/${{ github.event.inputs.tool_name }}
-        run: zig build -Doptimize=ReleaseSmall
+        run: |
+          zig build -Doptimize=ReleaseSmall
+          Get-ChildItem zig-out\bin\*.exe | Rename-Item -NewName "${{ github.event.inputs.tool_name }}.exe"
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ github.event.inputs.tool_name }}_zig_amd64.exe
-          path: zig/${{ github.event.inputs.tool_name }}/zig-out/bin/*.exe
+          path: zig/${{ github.event.inputs.tool_name }}/zig-out/bin/${{ github.event.inputs.tool_name }}.exe
