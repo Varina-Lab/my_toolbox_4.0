@@ -38,6 +38,7 @@ pub fn main() !void {
     try stdout.print("Thoi gian chay: {d} ms\n", .{ end_time - start_time });
     
     try stdout.print("Nhan Enter de thoat...\n", .{});
-    var buf: [1]u8 = undefined;
-    _ = try std.io.getStdIn().reader().read(&buf);
+    // Sửa lại hàm chờ người dùng bấm Enter cho chuẩn xác trên Windows
+    var buf: [1024]u8 = undefined;
+    _ = try std.io.getStdIn().reader().readUntilDelimiterOrEof(&buf, '\n');
 }
