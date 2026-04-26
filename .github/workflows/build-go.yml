@@ -19,18 +19,17 @@ jobs:
           
       - name: Build Standalone EXE
         working-directory: go/${{ github.event.inputs.tool_name }}
-        run: go build -ldflags="-s -w" -o tool.exe main.go
+        run: go build -ldflags="-s -w" -o ${{ github.event.inputs.tool_name }}.exe main.go
         
-      # THÊM BƯỚC NÀY: Sử dụng UPX nén file exe ở mức tối đa (level 9)
       - name: Compress binary with UPX
         uses: crazy-max/ghaction-upx@v3
         with:
           version: latest
-          files: go/${{ github.event.inputs.tool_name }}/tool.exe
+          files: go/${{ github.event.inputs.tool_name }}/${{ github.event.inputs.tool_name }}.exe
           args: -9
           
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ github.event.inputs.tool_name }}_go_amd64.exe
-          path: go/${{ github.event.inputs.tool_name }}/tool.exe
+          path: go/${{ github.event.inputs.tool_name }}/${{ github.event.inputs.tool_name }}.exe
