@@ -289,19 +289,16 @@ fn learningMode(engine: *Engine, allocator: std.mem.Allocator) !void {
         std.debug.print("\nFound new stubborn folders. Keep which ones? (comma separated, e.g. 0,1):\n", .{});
         for (stubborn_candidates.items, 0..) |f, i| std.debug.print("{d}: [{s}] {s}\n", .{ i, f.tag, f.name });
         
-        var chosen_idx = std.ArrayList([]const u8).init(allocator);
-        try parseMultiSelect(allocator, stubborn_candidates.items, &chosen_idx); // trick using dummy list to parse indices
+        // ĐÃ SỬA: Đẩy thẳng kết quả chọn vào biến selected_folders (Đúng kiểu dữ liệu StubbornFolder)
+        try parseMultiSelect(allocator, stubborn_candidates.items, &selected_folders);
         
-        // (Simplified logic for CLI port) Giữ tất cả cho nhanh nếu không cần prompt phức tạp,
-        // Nhưng ở đây ta cứ add hết những gì người dùng chọn.
-        // Để ngắn gọn trong ví dụ, tự động lấy tất cả các folder stubborn được phát hiện.
-        for (stubborn_candidates.items) |f| {
+        // ĐÃ SỬA: Chỉ lặp qua những folder mà người dùng ĐÃ CHỌN (thay vì lặp qua tất cả)
+        for (selected_folders.items) |f| {
             const origin = try std.fs.path.join(allocator, &[_][]const u8{ try engine.getSysRoot(f.tag), f.name });
             const dest = try engine.mapPortPath(f.tag, f.name);
             
             try std.fs.cwd().makePath(std.fs.path.dirname(dest).?);
             try runCmdNoWindow(allocator, &[_][]const u8{ "robocopy", origin, dest, "/E", "/MOVE", "/NFL", "/NDL", "/NJH", "/NJS", "/R:3", "/W:1" });
-            try selected_folders.append(f);
         }
     }
 
