@@ -1,0 +1,26 @@
+name: Build Zig Tool
+on:
+  workflow_dispatch:
+    inputs:
+      tool_name:
+        description: 'Tên thư mục tool trong zig/'
+        required: true
+        default: '_template'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Zig 0.13.0
+        uses: mlugg/setup-zig@v1
+        with:
+          version: '0.13.0'
+      - name: Build Standalone EXE (ReleaseSmall)
+        working-directory: zig/${{ github.event.inputs.tool_name }}
+        run: zig build -Doptimize=ReleaseSmall
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.tool_name }}_zig_amd64.exe
+          path: zig/${{ github.event.inputs.tool_name }}/zig-out/bin/*.exe
