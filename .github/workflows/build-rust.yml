@@ -1,0 +1,24 @@
+name: Build Rust Tool
+on:
+  workflow_dispatch:
+    inputs:
+      tool_name:
+        description: 'Tên thư mục tool trong rust/'
+        required: true
+        default: '_template'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust Stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build Standalone EXE
+        working-directory: rust/${{ github.event.inputs.tool_name }}
+        run: cargo build --release
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.tool_name }}_rust_amd64.exe
+          path: rust/${{ github.event.inputs.tool_name }}/target/release/*.exe
