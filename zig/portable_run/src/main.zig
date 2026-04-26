@@ -1,13 +1,14 @@
 const std = @import("std");
 const windows = std.os.windows;
 
-// --- Win32 API Definitions (Thuần khiết, không thư viện ngoài) ---
+// --- Win32 API Definitions ---
 extern "user32" fn MessageBoxA(hWnd: ?windows.HWND, lpText: [*:0]const u8, lpCaption: [*:0]const u8, uType: c_uint) callconv(.C) c_int;
 extern "comdlg32" fn GetOpenFileNameA(lpofn: *OPENFILENAMEA) callconv(.C) windows.BOOL;
 extern "kernel32" fn SetEnvironmentVariableA(lpName: [*:0]const u8, lpValue: [*:0]const u8) callconv(.C) windows.BOOL;
 
 const MB_YESNO: c_uint = 4;
 const MB_ICONQUESTION: c_uint = 32;
+const MB_ICONERROR: c_uint = 16;
 const IDYES: c_int = 6;
 
 const OPENFILENAMEA = extern struct {
@@ -41,7 +42,6 @@ const NOISE_KEYWORDS = [_][]const u8{
     "temp", "logs", "crash", "telemetry", "onedrive", "unity", "squirrel",
 };
 
-// --- Models ---
 const StubbornFolder = struct { tag: []const u8, name: []const u8 };
 const AppConfig = struct {
     selected_exe: []const u8,
@@ -49,7 +49,6 @@ const AppConfig = struct {
     stubborn_folders: []StubbornFolder,
 };
 
-// --- Core Engine ---
 const Engine = struct {
     allocator: std.mem.Allocator,
     p_data: []const u8,
@@ -105,7 +104,6 @@ const Engine = struct {
     }
 };
 
-// --- GUI Helpers (Sử dụng Win32 API) ---
 fn askYesNo(allocator: std.mem.Allocator, title: []const u8, msg: []const u8) bool {
     const msg_z = allocator.dupeZ(u8, msg) catch return false;
     const title_z = allocator.dupeZ(u8, title) catch return false;
@@ -120,7 +118,8 @@ fn pickExe(allocator: std.mem.Allocator) ![]const u8 {
     ofn.nMaxFile = 260;
     const filter = "Executables\x00*.exe\x00\x00";
     ofn.lpstrFilter = filter;
-    ofn.Flags = 0x00001000 | 0x00000004; // OFN_FILEMUSTEXIST | OFN_HIDEREADONLY
+    // Thêm OFN_NOCHANGEDIR để Hộp thoại không tự đổi thư mục hiện tại của tiến trình
+    ofn.Flags = 0x00001000 | 0x00000004 | 0x00000008; 
     ofn.lpstrTitle = "Select the Application to make Portable";
 
     if (GetOpenFileNameA(&ofn) != 0) {
@@ -129,7 +128,6 @@ fn pickExe(allocator: std.mem.Allocator) ![]const u8 {
     return error.Cancelled;
 }
 
-// Chạy tiến trình ngầm hoàn toàn (Không sinh rác)
 fn runSilentCmd(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var child = std.process.Child.init(args, allocator);
     child.stdin_behavior = .Ignore;
@@ -148,7 +146,20 @@ fn containsNoise(name: []const u8) bool {
     return false;
 }
 
-pub fn main() !void {
+// =====================================================================
+// LƯỚI BẮT LỖI TOÀN CẦU (GLOBAL ERROR HANDLER)
+// Ngăn chặn "cái chết im lặng", hiển thị Popup nếu có lỗi xảy ra!
+// =====================================================================
+pub fn main() void {
+    mainImpl() catch |err| {
+        var buf: [256]u8 = undefined;
+        // Bắt lỗi và in ra MessageBox
+        const msg = std.fmt.bufPrintZ(&buf, "Program Crashed!\nError Code: {any}", .{err}) catch "Fatal Error!";
+        _ = MessageBoxA(null, msg, "Critical Error", MB_ICONERROR);
+    };
+}
+
+fn mainImpl() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -168,15 +179,13 @@ pub fn main() !void {
 }
 
 fn learningMode(engine: *Engine, allocator: std.mem.Allocator) !void {
-    // 1. Tự động nhận diện bản thân để loại trừ
     const self_path = try std.fs.selfExePathAlloc(allocator);
     const self_name = std.fs.path.basename(self_path);
 
     var exes = std.ArrayList([]const u8).init(allocator);
     var dir = try std.fs.cwd().openDir(".", .{ .iterate = true });
-    defer dir.close();
-    var it = dir.iterate();
     
+    var it = dir.iterate();
     while (try it.next()) |entry| {
         if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".exe")) {
             if (!std.mem.eql(u8, entry.name, self_name)) {
@@ -184,13 +193,16 @@ fn learningMode(engine: *Engine, allocator: std.mem.Allocator) !void {
             }
         }
     }
+    dir.close();
 
     var selected_exe: []const u8 = "";
     if (exes.items.len == 1) {
         selected_exe = exes.items[0];
-    } else {
-        // Gọi GUI chuẩn Windows để chọn file
+    } else if (exes.items.len > 1) {
         selected_exe = pickExe(allocator) catch return; 
+    } else {
+        _ = MessageBoxA(null, "No target executable found in the directory!", "Error", MB_ICONERROR);
+        return;
     }
 
     try engine.bootstrap();
@@ -202,8 +214,9 @@ fn learningMode(engine: *Engine, allocator: std.mem.Allocator) !void {
 
     try engine.setupEnv();
 
-    // Chạy app (Trực tiếp, không qua cmd)
-    var child = std.process.Child.init(&[_][]const u8{selected_exe}, allocator);
+    // ĐÃ SỬA: Ép đường dẫn thành ./app.exe để chạy an toàn
+    const run_path = try std.fs.path.join(allocator, &[_][]const u8{ ".", selected_exe });
+    var child = std.process.Child.init(&[_][]const u8{run_path}, allocator);
     _ = try child.spawnAndWait();
     std.time.sleep(1 * std.time.ns_per_s);
 
@@ -234,10 +247,9 @@ fn learningMode(engine: *Engine, allocator: std.mem.Allocator) !void {
             const msg = try std.fmt.allocPrintZ(allocator, "Found new Folder in [{s}]:\n{s}\n\nDo you want to make it portable?", .{tag, name});
             if (askYesNo(allocator, "Folder Detected", msg)) {
                 const origin = try std.fs.path.join(allocator, &[_][]const u8{ try engine.getSysRoot(tag), name });
-                const dest = try std.fs.path.join(allocator, &[_][]const u8{ engine.p_data, tag, name }); // Rút gọn đường dẫn map
+                const dest = try std.fs.path.join(allocator, &[_][]const u8{ engine.p_data, tag, name });
                 
                 try std.fs.cwd().makePath(std.fs.path.dirname(dest).?);
-                // Dùng robocopy nhưng ở chế độ câm điếc hoàn toàn, siêu nhanh
                 try runSilentCmd(allocator, &[_][]const u8{ "robocopy", origin, dest, "/E", "/MOVE", "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS", "/NP" });
                 try selected_folders.append(.{ .tag = tag, .name = name });
             }
@@ -271,7 +283,9 @@ fn runSandbox(engine: *Engine, config: AppConfig) !void {
 
     try engine.setupEnv();
 
-    var child = std.process.Child.init(&[_][]const u8{config.selected_exe}, engine.allocator);
+    // ĐÃ SỬA: Ép đường dẫn thành ./app.exe
+    const run_path = try std.fs.path.join(engine.allocator, &[_][]const u8{ ".", config.selected_exe });
+    var child = std.process.Child.init(&[_][]const u8{run_path}, engine.allocator);
     _ = try child.spawnAndWait();
 
     for (junctions.items) |j| {
@@ -292,7 +306,6 @@ fn snapshotFolders(engine: *Engine, set: *std.StringHashMap(void), allocator: st
         var it = dir.iterate();
         
         while (try it.next()) |entry| {
-            // CHẶN SYMLINK: Bỏ qua các Folder ảo do hệ thống tự tạo trước đó (Tránh vòng lặp lặp đi lặp lại)
             if (entry.kind == .directory) {
                 const key = try std.fmt.allocPrint(allocator, "{s}|{s}", .{ tag, entry.name });
                 try set.put(key, {});
@@ -342,8 +355,7 @@ fn syncRegistry(engine: *Engine, allocator: std.mem.Allocator, keys: [][]const u
 }
 
 fn saveConfig(engine: *Engine, allocator: std.mem.Allocator, exe: []const u8, reg: [][]const u8, folders: []StubbornFolder) !void {
-    _ = allocator; // <--- THÊM DÒNG NÀY VÀO ĐÂY ĐỂ BỎ QUA LỖI UNUSED PARAMETER
-
+    _ = allocator; 
     const config = AppConfig{
         .selected_exe = exe,
         .registry_keys = reg,
