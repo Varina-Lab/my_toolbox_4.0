@@ -342,6 +342,8 @@ fn syncRegistry(engine: *Engine, allocator: std.mem.Allocator, keys: [][]const u
 }
 
 fn saveConfig(engine: *Engine, allocator: std.mem.Allocator, exe: []const u8, reg: [][]const u8, folders: []StubbornFolder) !void {
+    _ = allocator; // <--- THÊM DÒNG NÀY VÀO ĐÂY ĐỂ BỎ QUA LỖI UNUSED PARAMETER
+
     const config = AppConfig{
         .selected_exe = exe,
         .registry_keys = reg,
