@@ -4,21 +4,28 @@ extrn ReadConsoleA:proc
 extrn ExitProcess:proc
 extrn QueryPerformanceCounter:proc
 extrn QueryPerformanceFrequency:proc
+extrn CreateThread:proc
+extrn WaitForMultipleObjects:proc
+extrn CloseHandle:proc
 
 .data
     limit EQU 10000000
-    max_idx EQU 4999998         ; max_idx = (10000000 - 3) / 2
-    
-    ; 625000 bytes = 5,000,000 bits. Đủ để biểu diễn 5 triệu số lẻ.
-    qword_count EQU 78125       ; 625000 / 8 = 78125 khối 64-bit
+    max_idx EQU 4999998
+    qword_count EQU 78125
+    num_threads EQU 4           ; Tối ưu cho CPU 4 luồng
 
-    msg_hdr  db "--- ASSEMBLY (BITSET + POPCNT ALGORITHM) ---", 10, "So nguyen to tim duoc (<10000000): ", 0
+    msg_hdr  db "--- ASM (4 THREADS PARALLEL) ---", 10, "So nguyen to tim duoc (<10000000): ", 0
     msg_time db 10, "Thoi gian chay: ", 0
     msg_ms   db " ms", 10, "Nhan Enter de thoat...", 10, 0
 
 .data?
-    ALIGN 8                     ; Căn lề 8-byte để tăng tốc độ đọc QWORD
-    is_comp db 625000 dup(?)    ; Chỉ tốn 625 KB RAM! (1 Bit = 1 số lẻ)
+    ALIGN 8
+    is_comp db 625000 dup(?)
+    
+    ; Bộ đệm quản lý Đa luồng
+    thread_handles dq 4 dup(?)
+    thread_ids     dd 4 dup(?)
+    
     str_buf db 512 dup(?)
     freq    dq ?
     start_t dq ?
@@ -26,89 +33,128 @@ extrn QueryPerformanceFrequency:proc
     written dd ?
 
 .code
+; =====================================================================
+; THREAD WORKER: Hàm thực thi song song trên các lõi CPU
+; Input: RCX = Thread ID (0, 1, 2, 3)
+; =====================================================================
+SieveWorker proc
+    lea r8, is_comp
+    mov r9, rcx                 ; r9 = i = ID của luồng (0, 1, 2 hoặc 3)
+
+outer_loop:
+    bt [r8], r9
+    jc next_p                   ; Nếu là hợp số, bỏ qua
+
+    lea r10, [r9*2 + 3]         ; r10 = p = 2*i + 3
+    mov rax, r10
+    imul rax, r10               ; p * p
+    cmp rax, limit
+    jg thread_exit              ; Nếu p*p > limit -> Luồng này đã xong việc!
+
+    sub rax, 3
+    shr rax, 1
+    mov r11, rax                ; r11 = j = Bắt đầu vòng lặp trong
+
+inner_loop:
+    ; BẮT BUỘC phải có tiền tố "LOCK" để chống Data Race giữa 4 lõi CPU
+    lock bts [r8], r11          
+    add r11, r10                
+    cmp r11, max_idx
+    jbe inner_loop
+
+next_p:
+    add r9, num_threads         ; Luồng 0 làm: 0, 4, 8... Luồng 1 làm: 1, 5, 9... (Chia việc đều nhau)
+    jmp outer_loop
+
+thread_exit:
+    xor eax, eax
+    ret
+SieveWorker endp
+
+; =====================================================================
+; HÀM MAIN: Quản lý và Đồng bộ hóa luồng
+; =====================================================================
 main proc
     sub rsp, 48h
 
-    ; 1. Lấy tần số CPU
     lea rcx, freq
     call QueryPerformanceFrequency
 
-    ; 2. Bắt đầu bấm giờ
     lea rcx, start_t
     call QueryPerformanceCounter
 
-    ; 3. Thuật toán Sàng nguyên tố bằng BIT (Bit-Level Odd-Only Sieve)
-    lea r8, is_comp             ; R8 = Địa chỉ cơ sở của mảng Bit
-    mov r9, 0                   ; R9 = i = 0 (Tương ứng với số 3)
-
-outer_loop:
-    ; Lệnh BT (Bit Test): Kiểm tra bit thứ r9 trong mảng r8.
-    ; CPU tự động tính toán byte và bit offset. Đẩy kết quả vào cờ Carry (CF).
-    bt [r8], r9
-    jc next_p                   ; Nếu CF=1 (Bit đã set = Hợp số), bỏ qua
-
-    ; Tính p = 2*i + 3
-    lea r10, [r9*2 + 3]         ; r10 = p
-
-    ; Tính p * p
-    mov rax, r10
-    imul rax, r10
-    cmp rax, limit
-    jg do_count                 ; Nếu p*p > limit -> Dừng sàng
-
-    ; Tính index bắt đầu j = (p*p - 3) / 2
-    sub rax, 3
-    shr rax, 1
-    mov r11, rax                ; r11 = j
-
-    ; ---------------------------------------------------------
-    ; [VÒNG LẶP LÕI (INNER LOOP)]: Siêu Cache-Friendly
-    ; Lệnh BTS (Bit Test and Set) tự động bật bit thứ r11 lên 1
-    ; ---------------------------------------------------------
-inner_loop:
-    bts [r8], r11               ; Bật bit hợp số
-    add r11, r10                ; j += p
-    cmp r11, max_idx
-    jbe inner_loop              
-    ; ---------------------------------------------------------
-
-next_p:
-    inc r9
-    jmp outer_loop
-
-do_count:
-    ; 4. [TỐI ƯU CỰC ĐẠI]: Đếm số lượng nguyên tố bằng POPCNT
-    ; Lệnh POPCNT đếm số lượng bit '1' (Hợp số) trong thanh ghi 64-bit chỉ tốn 1 cycle.
-    xor r11, r11                ; R11 = Tổng số hợp số (Composite count) = 0
-    lea rsi, is_comp
-    mov rcx, qword_count        ; Lặp 78125 lần (Mỗi lần đếm 64 số)
+    ; 1. Khởi tạo 4 luồng phần cứng (Spawn Threads)
+    xor r12, r12                ; r12 = thread_index = 0
+spawn_loop:
+    ; Cấp phát tham số cho CreateThread
+    sub rsp, 30h
+    mov rcx, 0                  ; lpThreadAttributes = NULL
+    mov rdx, 0                  ; dwStackSize = 0 (Default)
+    lea r8, SieveWorker         ; lpStartAddress = Địa chỉ hàm Worker
+    mov r9, r12                 ; lpParameter = ID luồng (Truyền vào RCX của Worker)
+    mov qword ptr [rsp+20h], 0  ; dwCreationFlags = 0 (Chạy ngay lập tức)
+    lea rax, thread_ids
+    mov [rsp+28h], rax          ; lpThreadId
+    call CreateThread
+    add rsp, 30h
     
+    ; Lưu Handle của luồng
+    lea rbx, thread_handles
+    mov [rbx + r12*8], rax
+    
+    inc r12
+    cmp r12, num_threads
+    jl spawn_loop
+
+    ; 2. Đợi cả 4 luồng làm xong việc (Wait Barrier)
+    sub rsp, 28h
+    mov rcx, num_threads        ; nCount = 4
+    lea rdx, thread_handles     ; lpHandles
+    mov r8, 1                   ; bWaitAll = TRUE (Đợi TẤT CẢ cùng xong)
+    mov r9, -1                  ; dwMilliseconds = INFINITE
+    call WaitForMultipleObjects
+    add rsp, 28h
+
+    ; Đóng Handle dọn rác hệ thống
+    xor r12, r12
+close_loop:
+    sub rsp, 28h
+    lea rbx, thread_handles
+    mov rcx, [rbx + r12*8]
+    call CloseHandle
+    add rsp, 28h
+    inc r12
+    cmp r12, num_threads
+    jl close_loop
+
+    ; 3. Đếm tổng hợp số (Đơn luồng siêu tốc POPCNT)
+    xor r11, r11
+    lea rsi, is_comp
+    mov rcx, qword_count
 count_loop:
-    popcnt rax, qword ptr [rsi] ; Đếm số lượng bit 1 trong khối 8 byte
-    add r11, rax                ; Cộng vào tổng
-    add rsi, 8                  ; Nhảy sang khối 64-bit tiếp theo
+    popcnt rax, qword ptr [rsi]
+    add r11, rax
+    add rsi, 8
     dec rcx
     jnz count_loop
 
-    ; Số nguyên tố = 1 (số 2) + 4999999 (tổng số lẻ) - Số hợp số (r11)
-    ; => Số nguyên tố = 5000000 - r11
+    ; Tính nguyên tố: 5000000 - Hợp số
     mov rax, 5000000
     sub rax, r11
-    mov r11, rax                ; R11 = Tổng số nguyên tố cuối cùng!
+    mov r11, rax
 
-    ; 5. Dừng bấm giờ
+    ; 4. Tính giờ
     lea rcx, end_t
     call QueryPerformanceCounter
 
-    ; 6. Tính Mili-giây
     mov rax, end_t
     sub rax, start_t
     mov rcx, 1000
     mul rcx
     div qword ptr [freq]
-    mov r10, rax                ; R10 = ms
+    mov r10, rax                ; ms
 
-    ; 7. Ghi chuỗi ra màn hình
+    ; In ấn
     lea rdi, str_buf
     lea rsi, msg_hdr
     call copy_string
@@ -125,7 +171,6 @@ count_loop:
     sub rdi, rax
     mov rbx, rdi
 
-    ; 8. In ra Console
     mov rcx, -11
     call GetStdHandle
     mov rcx, rax
@@ -135,7 +180,6 @@ count_loop:
     mov qword ptr [rsp + 20h], 0
     call WriteConsoleA
 
-    ; 9. Chờ người dùng
     mov rcx, -10
     call GetStdHandle
     mov rcx, rax
@@ -145,12 +189,10 @@ count_loop:
     mov qword ptr [rsp + 20h], 0
     call ReadConsoleA
 
-    ; 10. Thoát
     xor ecx, ecx
     call ExitProcess
 main endp
 
-; --- Helpers ---
 copy_string proc
 L_copy:
     mov al, [rsi]
