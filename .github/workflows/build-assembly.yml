@@ -16,15 +16,16 @@ jobs:
       - name: Setup MSVC Environment
         uses: ilammy/msvc-dev-cmd@v1
       
-      - name: Compile and Link Assembly (Pure Win32)
+      - name: Compile and Link Assembly (Extreme Optimized)
         working-directory: assembly/${{ github.event.inputs.tool_name }}
         run: |
-          # Dịch mã ASM thành Object file
+          # 1. Biên dịch ASM thành .obj
           ml64.exe /c /Cx /W3 main.asm
           
-          # Liên kết thành EXE Độc lập: CHỈ dùng kernel32.lib và user32.lib (Không có C-Runtime)
-          # Chỉ định điểm vào (ENTRY) là main để bỏ qua mọi hàm khởi tạo thừa thãi
-          link.exe main.obj /SUBSYSTEM:CONSOLE /MACHINE:X64 /ENTRY:main /OUT:"${{ github.event.inputs.tool_name }}.exe" kernel32.lib user32.lib
+          # 2. Liên kết siêu nén (Super Compression Link)
+          # - Chỉ dùng kernel32.lib
+          # - Trộn (.MERGE) các phân vùng Data và Text lại để tiết kiệm khoảng trống của Header
+          link.exe main.obj /SUBSYSTEM:CONSOLE /MACHINE:X64 /ENTRY:main /MERGE:.rdata=.text /MERGE:.pdata=.text /OUT:"${{ github.event.inputs.tool_name }}.exe" kernel32.lib
           
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
