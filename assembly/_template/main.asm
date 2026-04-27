@@ -1,4 +1,4 @@
-; prime_sieve_extreme_fixed.asm
+; prime_sieve_extreme_final.asm
 OPTION CASEMAP:NONE
 
 extrn GetStdHandle:proc
@@ -11,8 +11,6 @@ extrn lstrlenA:proc
 
 .DATA
 limit       QWORD 10000000
-
-; Chỉ lưu số lẻ >2
 bits_len    QWORD ((10000000/2 +7)/8)
 is_prime    DB ((10000000/2 +7)/8) DUP(0FFh)
 
@@ -32,38 +30,44 @@ hStdOut     QWORD ?
 hStdIn      QWORD ?
 
 .CODE
-; --- Macro set / clear / test bit bằng mask ---
-set_bit MACRO arr, idx
-    mov rax, idx
-    shr rax, 3
-    mov rcx, idx
-    and rcx, 7
-    mov rdx, 1
-    shl rdx, cl
-    or BYTE PTR arr[rax], dl
-ENDM
 
-clear_bit MACRO arr, idx
+; --- inline set bit ---
+set_bit PROC idx:QWORD
     mov rax, idx
     shr rax, 3
     mov rcx, idx
-    and rcx, 7
+    and cl, 7
     mov rdx, 1
-    shl rdx, cl
+    shl dl, cl
+    or BYTE PTR is_prime[rax], dl
+    ret
+set_bit ENDP
+
+; --- inline clear bit ---
+clear_bit PROC idx:QWORD
+    mov rax, idx
+    shr rax, 3
+    mov rcx, idx
+    and cl, 7
+    mov rdx, 1
+    shl dl, cl
     not dl
-    and BYTE PTR arr[rax], dl
-ENDM
+    and BYTE PTR is_prime[rax], dl
+    ret
+clear_bit ENDP
 
-test_bit MACRO arr, idx, out
+; --- inline test bit ---
+test_bit PROC idx:QWORD
     mov rax, idx
     shr rax, 3
     mov rcx, idx
-    and rcx, 7
-    mov rdx, BYTE PTR arr[rax]
+    and cl, 7
+    mov dl, BYTE PTR is_prime[rax]
     shr dl, cl
     and dl, 1
-    mov out, dl
-ENDM
+    movzx rax, dl
+    ret
+test_bit ENDP
 
 main PROC
     ; --- Bấm giờ bắt đầu ---
@@ -78,11 +82,10 @@ main PROC
     call GetStdHandle
     mov hStdIn, rax
 
-    ; --- 2 là prime ---
-    mov count, 1
+    mov count, 1          ; 2 là prime
 
     ; --- Sieve chỉ số lẻ ---
-    mov rbx, 3                  ; p = 3
+    mov rbx, 3
 next_p:
     mov rax, rbx
     imul rax, rbx
@@ -90,21 +93,18 @@ next_p:
     ja done_sieve
 
     ; p có phải prime?
-    mov al, 0
     mov rcx, rbx
-    shr rcx, 1
-    test_bit is_prime, rcx, al
-    cmp al, 0
+    call test_bit
+    cmp rax, 0
     je skip_inner
 
-    ; đánh dấu bội số từ p*p, bước 2p
+    ; đánh dấu bội số
     mov rsi, rax
 inner_loop:
     cmp rsi, limit
     ja inner_done
     mov rcx, rsi
-    shr rcx,1
-    clear_bit is_prime, rcx
+    call clear_bit
     add rsi, rbx*2
     jmp inner_loop
 inner_done:
@@ -121,16 +121,16 @@ count_loop:
     shl rax, 1
     cmp rax, limit
     ja count_done
-    mov al, 0
-    test_bit is_prime, rcx, al
-    cmp al, 0
+    mov rcx, rax
+    call test_bit
+    cmp rax, 0
     je skip_inc
     inc rdx
 skip_inc:
     inc rcx
     jmp count_loop
 count_done:
-    add rdx, 1          ; cộng prime =2
+    add rdx, 1
     mov count, rdx
 
     ; --- Bấm giờ kết thúc ---
@@ -143,8 +143,8 @@ count_done:
     lea rdx, fmt_out
     mov r8, limit
     mov r9, count
-    mov [rsp+20h], duration
     sub rsp, 28h
+    mov r10d, duration
     call wsprintfA
     add rsp, 28h
 
