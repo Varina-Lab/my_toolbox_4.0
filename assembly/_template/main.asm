@@ -38,7 +38,7 @@ main proc
     lea rdi, is_prime
     mov rcx, limit + 1
     mov al, 1
-    rep stosb                   ; Điền toàn bộ mảng bằng 1 siêu tốc
+    rep stosb                   
 
     ; Gán 0 và 1 không phải là số nguyên tố
     lea r8, is_prime
@@ -46,35 +46,35 @@ main proc
     mov byte ptr [r8 + 1], 0
 
     ; 4. [TỐI ƯU LÔ-GIC]: Thuật toán Sàng nguyên tố
-    mov r9, 2                   ; r9 = p = 2
+    mov r9, 2                   
 outer_loop:
     mov rax, r9
-    imul rax, r9                ; rax = p * p
+    imul rax, r9                
     cmp rax, limit
-    jg count_primes             ; p * p > limit => Dừng sàng
+    jg count_primes             
 
     cmp byte ptr [r8 + r9], 0
-    je next_p                   ; Bỏ qua nếu không phải số nguyên tố
+    je next_p                   
 
-    mov r11, rax                ; r11 = i = p * p
-inner_loop:                     ; Vòng lặp tối giản (ít chỉ thị nhất có thể)
-    mov byte ptr [r8 + r11], 0  ; is_prime[i] = 0
-    add r11, r9                 ; i += p
+    mov r11, rax                
+inner_loop:                     
+    mov byte ptr [r8 + r11], 0  
+    add r11, r9                 
     cmp r11, limit
-    jle inner_loop              ; Rẽ nhánh hiệu năng cao
+    jle inner_loop              
 
 next_p:
-    inc r9                      ; p++
+    inc r9                      
     jmp outer_loop
 
 count_primes:
-    ; 5. [TỐI ƯU ĐẾM]: Vì mảng chỉ chứa 0 và 1, thay vì so sánh, ta CỘNG DỒN thẳng vào bộ đếm
-    xor r11, r11                ; r11 = count = 0
+    ; 5. [TỐI ƯU ĐẾM]: Cộng dồn byte vào bộ đếm thay vì lệnh so sánh
+    xor r11, r11                
     lea rsi, is_prime
     mov rcx, limit + 1
 count_loop:
-    movzx rax, byte ptr [rsi]   ; Đọc 1 byte không làm rác thanh ghi
-    add r11, rax                ; count += giá trị byte (0 hoặc 1)
+    movzx rax, byte ptr [rsi]   
+    add r11, rax                
     inc rsi
     dec rcx
     jnz count_loop
@@ -87,45 +87,45 @@ count_loop:
     mov rax, end_t
     sub rax, start_t
     mov rcx, 1000
-    mul rcx                     ; rdx:rax = rax * 1000
-    div qword ptr [freq]        ; rax = rax / freq
+    mul rcx                     
+    div qword ptr [freq]        
     mov r10, rax                ; r10 = Thời gian chạy (ms)
 
-    ; 8. [ZERO-DEPENDENCY]: Tự copy và format chuỗi không cần C-Runtime
+    ; 8. [ZERO-DEPENDENCY]: Tự format chuỗi bằng mã máy
     lea rdi, str_buf
     
     lea rsi, msg_header
-    call copy_string            ; In Header
+    call copy_string            
     
     mov rax, r11
-    call itoa                   ; In Số lượng nguyên tố
+    call itoa                   
     
     lea rsi, msg_time
-    call copy_string            ; In chữ "Thoi gian chay: "
+    call copy_string            
     
     mov rax, r10
-    call itoa                   ; In số Mili-giây
+    call itoa                   
     
     lea rsi, msg_ms
-    call copy_string            ; In chữ " ms"
+    call copy_string            
 
     ; Tính toán chiều dài chuỗi cuối cùng
     lea rax, str_buf
     sub rdi, rax
-    mov r12, rdi                ; r12 = Chiều dài chuỗi cần in
+    mov r12, rdi                
 
-    ; 9. In ra Terminal (Win32 API: WriteConsole)
+    ; 9. In ra Terminal (Win32 API: WriteConsoleA)
     mov rcx, -11                ; STD_OUTPUT_HANDLE
     call GetStdHandle
     
-    mov rcx, rax                ; hConsoleOutput
-    lea rdx, str_buf            ; lpBuffer
-    mov r8, r12                 ; nNumberOfCharsToWrite
-    lea r9, written             ; lpNumberOfCharsWritten
+    mov rcx, rax                
+    lea rdx, str_buf            
+    mov r8, r12                 
+    lea r9, written             
     mov qword ptr [rsp + 20h], 0
     call WriteConsoleA
 
-    ; 10. Chờ người dùng bấm phím (ReadConsole)
+    ; 10. Chờ người dùng bấm phím (ReadConsoleA)
     mov rcx, -10                ; STD_INPUT_HANDLE
     call GetStdHandle
     
@@ -143,49 +143,50 @@ main endp
 
 ; ---------------------------------------------------------
 ; Hàm phụ trợ: Copy chuỗi (Tương đương strcpy)
-; Input: rsi = Chuỗi nguồn (kết thúc bằng 0), rdi = Chuỗi đích
+; Input: rsi = Chuỗi nguồn, rdi = Chuỗi đích
 ; Output: rdi = Điểm cuối của chuỗi đích
 ; ---------------------------------------------------------
 copy_string proc
-.L_copy:
+L_copy:
     mov al, [rsi]
     test al, al
-    jz .L_done
+    jz L_done
     mov [rdi], al
     inc rsi
     inc rdi
-    jmp .L_copy
-.L_done:
+    jmp L_copy
+L_done:
     ret
 copy_string endp
 
 ; ---------------------------------------------------------
 ; Hàm phụ trợ: Số nguyên sang Chuỗi (Tương đương itoa)
 ; Input: rax = Số cần in, rdi = Chuỗi đích
-; Output: rdi = Điểm cuối của chuỗi đích sau khi in số
+; Output: rdi = Điểm cuối của chuỗi đích
 ; ---------------------------------------------------------
 itoa proc
     mov rbx, 10
-    mov r8, rsp                 ; Lưu đỉnh Stack
-    sub rsp, 32                 ; Mượn Stack làm bộ đệm lật ngược số
-    mov r9, rsp
-.L_div:
+    ; Cấp phát không gian an toàn trên Stack (Windows x64 ABI)
+    sub rsp, 40h
+    lea r9, [rsp + 30h]
+L_div_loop:
     xor rdx, rdx
     div rbx
-    add dl, '0'                 ; Chuyển phần dư thành ký tự ASCII
+    add dl, '0'                 
     dec r9
     mov [r9], dl
     test rax, rax
-    jnz .L_div
-.L_write:                       ; Ghi từ Stack vào Buffer
+    jnz L_div_loop
+L_write_loop:                   
     mov al, [r9]
     mov [rdi], al
     inc rdi
     inc r9
-    cmp r9, rsp
-    jne .L_write
+    lea rcx, [rsp + 30h]
+    cmp r9, rcx
+    jne L_write_loop
 
-    mov rsp, r8                 ; Phục hồi Stack
+    add rsp, 40h
     ret
 itoa endp
 
