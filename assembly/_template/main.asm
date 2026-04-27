@@ -7,128 +7,137 @@ extrn QueryPerformanceFrequency:proc
 
 .data
     limit EQU 10000000
+    max_idx EQU 4999998         ; max_idx = (10000000 - 3) / 2
+    
+    ; 625000 bytes = 5,000,000 bits. Đủ để biểu diễn 5 triệu số lẻ.
+    qword_count EQU 78125       ; 625000 / 8 = 78125 khối 64-bit
 
-    ; Các chuỗi kết thúc bằng Null (0) để copy siêu tốc
-    msg_header db "--- ASSEMBLY (EXTREME OPTIMIZED) ---", 10, "So nguyen to tim duoc (<10000000): ", 0
-    msg_time   db 10, "Thoi gian chay: ", 0
-    msg_ms     db " ms", 10, "Nhan Enter de thoat...", 10, 0
+    msg_hdr  db "--- ASSEMBLY (BITSET + POPCNT ALGORITHM) ---", 10, "So nguyen to tim duoc (<10000000): ", 0
+    msg_time db 10, "Thoi gian chay: ", 0
+    msg_ms   db " ms", 10, "Nhan Enter de thoat...", 10, 0
 
 .data?
-    is_prime db 10000001 dup(?)
-    str_buf  db 512 dup(?)
-    freq     dq ?
-    start_t  dq ?
-    end_t    dq ?
-    written  dd ?
+    ALIGN 8                     ; Căn lề 8-byte để tăng tốc độ đọc QWORD
+    is_comp db 625000 dup(?)    ; Chỉ tốn 625 KB RAM! (1 Bit = 1 số lẻ)
+    str_buf db 512 dup(?)
+    freq    dq ?
+    start_t dq ?
+    end_t   dq ?
+    written dd ?
 
 .code
 main proc
-    ; Chuẩn gọi hàm x64: Cấp phát 72 bytes cho Shadow Space và Stack Alignment
     sub rsp, 48h
 
-    ; 1. Lấy tần số đồng hồ CPU (Microseconds precision)
+    ; 1. Lấy tần số CPU
     lea rcx, freq
     call QueryPerformanceFrequency
 
-    ; 2. Bắt đầu đếm giờ
+    ; 2. Bắt đầu bấm giờ
     lea rcx, start_t
     call QueryPerformanceCounter
 
-    ; 3. [TỐI ƯU CỰC ĐẠI]: Khởi tạo 10 triệu byte bằng vi lệnh phần cứng (REP STOSB)
-    lea rdi, is_prime
-    mov rcx, limit + 1
-    mov al, 1
-    rep stosb                   
+    ; 3. Thuật toán Sàng nguyên tố bằng BIT (Bit-Level Odd-Only Sieve)
+    lea r8, is_comp             ; R8 = Địa chỉ cơ sở của mảng Bit
+    mov r9, 0                   ; R9 = i = 0 (Tương ứng với số 3)
 
-    ; Gán 0 và 1 không phải là số nguyên tố
-    lea r8, is_prime
-    mov byte ptr [r8], 0
-    mov byte ptr [r8 + 1], 0
-
-    ; 4. [TỐI ƯU LÔ-GIC]: Thuật toán Sàng nguyên tố
-    mov r9, 2                   
 outer_loop:
-    mov rax, r9
-    imul rax, r9                
+    ; Lệnh BT (Bit Test): Kiểm tra bit thứ r9 trong mảng r8.
+    ; CPU tự động tính toán byte và bit offset. Đẩy kết quả vào cờ Carry (CF).
+    bt [r8], r9
+    jc next_p                   ; Nếu CF=1 (Bit đã set = Hợp số), bỏ qua
+
+    ; Tính p = 2*i + 3
+    lea r10, [r9*2 + 3]         ; r10 = p
+
+    ; Tính p * p
+    mov rax, r10
+    imul rax, r10
     cmp rax, limit
-    jg count_primes             
+    jg do_count                 ; Nếu p*p > limit -> Dừng sàng
 
-    cmp byte ptr [r8 + r9], 0
-    je next_p                   
+    ; Tính index bắt đầu j = (p*p - 3) / 2
+    sub rax, 3
+    shr rax, 1
+    mov r11, rax                ; r11 = j
 
-    mov r11, rax                
-inner_loop:                     
-    mov byte ptr [r8 + r11], 0  
-    add r11, r9                 
-    cmp r11, limit
-    jle inner_loop              
+    ; ---------------------------------------------------------
+    ; [VÒNG LẶP LÕI (INNER LOOP)]: Siêu Cache-Friendly
+    ; Lệnh BTS (Bit Test and Set) tự động bật bit thứ r11 lên 1
+    ; ---------------------------------------------------------
+inner_loop:
+    bts [r8], r11               ; Bật bit hợp số
+    add r11, r10                ; j += p
+    cmp r11, max_idx
+    jbe inner_loop              
+    ; ---------------------------------------------------------
 
 next_p:
-    inc r9                      
+    inc r9
     jmp outer_loop
 
-count_primes:
-    ; 5. [TỐI ƯU ĐẾM]: Cộng dồn byte vào bộ đếm thay vì lệnh so sánh
-    xor r11, r11                
-    lea rsi, is_prime
-    mov rcx, limit + 1
+do_count:
+    ; 4. [TỐI ƯU CỰC ĐẠI]: Đếm số lượng nguyên tố bằng POPCNT
+    ; Lệnh POPCNT đếm số lượng bit '1' (Hợp số) trong thanh ghi 64-bit chỉ tốn 1 cycle.
+    xor r11, r11                ; R11 = Tổng số hợp số (Composite count) = 0
+    lea rsi, is_comp
+    mov rcx, qword_count        ; Lặp 78125 lần (Mỗi lần đếm 64 số)
+    
 count_loop:
-    movzx rax, byte ptr [rsi]   
-    add r11, rax                
-    inc rsi
+    popcnt rax, qword ptr [rsi] ; Đếm số lượng bit 1 trong khối 8 byte
+    add r11, rax                ; Cộng vào tổng
+    add rsi, 8                  ; Nhảy sang khối 64-bit tiếp theo
     dec rcx
     jnz count_loop
 
-    ; 6. Dừng đếm giờ
+    ; Số nguyên tố = 1 (số 2) + 4999999 (tổng số lẻ) - Số hợp số (r11)
+    ; => Số nguyên tố = 5000000 - r11
+    mov rax, 5000000
+    sub rax, r11
+    mov r11, rax                ; R11 = Tổng số nguyên tố cuối cùng!
+
+    ; 5. Dừng bấm giờ
     lea rcx, end_t
     call QueryPerformanceCounter
 
-    ; 7. Tính toán mili-giây: (end - start) * 1000 / freq
+    ; 6. Tính Mili-giây
     mov rax, end_t
     sub rax, start_t
     mov rcx, 1000
-    mul rcx                     
-    div qword ptr [freq]        
-    mov r10, rax                ; r10 = Thời gian chạy (ms)
+    mul rcx
+    div qword ptr [freq]
+    mov r10, rax                ; R10 = ms
 
-    ; 8. [ZERO-DEPENDENCY]: Tự format chuỗi bằng mã máy
+    ; 7. Ghi chuỗi ra màn hình
     lea rdi, str_buf
-    
-    lea rsi, msg_header
-    call copy_string            
-    
+    lea rsi, msg_hdr
+    call copy_string
     mov rax, r11
-    call itoa                   
-    
+    call itoa
     lea rsi, msg_time
-    call copy_string            
-    
+    call copy_string
     mov rax, r10
-    call itoa                   
-    
+    call itoa
     lea rsi, msg_ms
-    call copy_string            
+    call copy_string
 
-    ; Tính toán chiều dài chuỗi cuối cùng
     lea rax, str_buf
     sub rdi, rax
-    mov r12, rdi                
+    mov rbx, rdi
 
-    ; 9. In ra Terminal (Win32 API: WriteConsoleA)
-    mov rcx, -11                ; STD_OUTPUT_HANDLE
+    ; 8. In ra Console
+    mov rcx, -11
     call GetStdHandle
-    
-    mov rcx, rax                
-    lea rdx, str_buf            
-    mov r8, r12                 
-    lea r9, written             
+    mov rcx, rax
+    lea rdx, str_buf
+    mov r8, rbx
+    lea r9, written
     mov qword ptr [rsp + 20h], 0
     call WriteConsoleA
 
-    ; 10. Chờ người dùng bấm phím (ReadConsoleA)
-    mov rcx, -10                ; STD_INPUT_HANDLE
+    ; 9. Chờ người dùng
+    mov rcx, -10
     call GetStdHandle
-    
     mov rcx, rax
     lea rdx, str_buf
     mov r8, 1
@@ -136,16 +145,12 @@ count_loop:
     mov qword ptr [rsp + 20h], 0
     call ReadConsoleA
 
-    ; 11. Thoát sạch sẽ
+    ; 10. Thoát
     xor ecx, ecx
     call ExitProcess
 main endp
 
-; ---------------------------------------------------------
-; Hàm phụ trợ: Copy chuỗi (Tương đương strcpy)
-; Input: rsi = Chuỗi nguồn, rdi = Chuỗi đích
-; Output: rdi = Điểm cuối của chuỗi đích
-; ---------------------------------------------------------
+; --- Helpers ---
 copy_string proc
 L_copy:
     mov al, [rsi]
@@ -159,25 +164,19 @@ L_done:
     ret
 copy_string endp
 
-; ---------------------------------------------------------
-; Hàm phụ trợ: Số nguyên sang Chuỗi (Tương đương itoa)
-; Input: rax = Số cần in, rdi = Chuỗi đích
-; Output: rdi = Điểm cuối của chuỗi đích
-; ---------------------------------------------------------
 itoa proc
     mov rbx, 10
-    ; Cấp phát không gian an toàn trên Stack (Windows x64 ABI)
     sub rsp, 40h
     lea r9, [rsp + 30h]
 L_div_loop:
     xor rdx, rdx
     div rbx
-    add dl, '0'                 
+    add dl, '0'
     dec r9
     mov [r9], dl
     test rax, rax
     jnz L_div_loop
-L_write_loop:                   
+L_write_loop:
     mov al, [r9]
     mov [rdi], al
     inc rdi
@@ -185,7 +184,6 @@ L_write_loop:
     lea rcx, [rsp + 30h]
     cmp r9, rcx
     jne L_write_loop
-
     add rsp, 40h
     ret
 itoa endp
