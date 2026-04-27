@@ -1,4 +1,4 @@
-; prime_sieve_final.asm
+; prime_sieve_masm64.asm
 OPTION CASEMAP:NONE
 
 extrn GetStdHandle:proc
@@ -11,8 +11,9 @@ extrn lstrlenA:proc
 
 .DATA
 limit       QWORD 10000000
-bits_len    QWORD ((10000000/2 +7)/8)
-is_prime    DB ((10000000/2 +7)/8) DUP(0FFh)
+
+bits_len    QWORD ((10000000/2+7)/8)
+is_prime    DB ((10000000/2+7)/8) DUP(0FFh)
 
 fmt_out     DB "--- ASSEMBLY (PURE WIN32 API) ---",10
             DB "So nguyen to tim duoc (<%d): %d",10
@@ -31,7 +32,7 @@ hStdIn      QWORD ?
 
 .CODE
 main PROC
-    ; --- Bấm giờ ---
+    ; --- Bấm giờ bắt đầu ---
     call GetTickCount
     mov start_tick, eax
 
@@ -46,68 +47,68 @@ main PROC
     mov count, 1          ; 2 là prime
 
     ; --- Sieve chỉ số lẻ ---
-    mov rbx, 3
+    mov rdx, 3
 next_p:
-    mov rax, rbx
-    imul rax, rbx
+    mov rax, rdx
+    imul rax, rdx
     cmp rax, limit
     ja done_sieve
 
-    ; test prime
-    mov rdx, rbx
-    shr rdx, 1
-    mov rcx, BYTE PTR is_prime[rdx/8]
-    mov r8, rdx
-    and r8, 7
-    mov r9, 1
-    shl r9, cl
-    test rcx, r9
+    ; --- Test p ---
+    mov rcx, rdx
+    shr rcx, 1                  ; index trong bit array
+    mov r8, rcx
+    shr r8, 3                    ; byte index
+    mov r9, cl
+    and r9, 7                     ; bit index
+    mov r10d, 1
+    shl r10d, r9                  ; mask
+    mov r11b, is_prime[r8]
+    test r11b, r10b
     jz skip_inner
 
-    ; đánh dấu bội số
+    ; --- Clear multiples ---
     mov rsi, rax
 inner_loop:
     cmp rsi, limit
     ja inner_done
-    mov rdx, rsi
-    shr rdx, 1
-    mov rcx, BYTE PTR is_prime[rdx/8]
-    mov r8, rdx
-    and r8, 7
-    mov r9, 1
-    shl r9, cl
-    not r9
-    and BYTE PTR is_prime[rdx/8], r9
-    add rsi, rbx*2
+    mov rcx, rsi
+    shr rcx, 1                    ; index bit array
+    mov r8, rcx
+    shr r8, 3                     ; byte index
+    mov r9, cl
+    and r9, 7                      ; bit index
+    mov r10d, 1
+    shl r10d, r9
+    not r10d
+    and BYTE PTR is_prime[r8], r10b
+    add rsi, rdx*2
     jmp inner_loop
 inner_done:
 skip_inner:
-    add rbx, 2
+    add rdx, 2
     jmp next_p
 done_sieve:
 
     ; --- Count primes ---
-    xor rdx, rdx
+    xor rax, rax
     mov rcx, 1
 count_loop:
-    mov rax, rcx
-    shl rax, 1
-    cmp rax, limit
-    ja count_done
     mov rbx, rcx
-    shr rbx, 1
-    mov al, BYTE PTR is_prime[rbx/8]
-    mov bl, 1
-    shl bl, cl
-    test al, bl
+    shr rbx, 1                    ; index bit array
+    mov r8, bl
+    mov r9, BYTE PTR is_prime[rbx]
+    mov r10d, 1
+    shl r10d, r8
+    test r9, r10b
     jz skip_inc
-    inc rdx
+    inc rax
 skip_inc:
     inc rcx
-    jmp count_loop
-count_done:
-    add rdx, 1          ; cộng prime =2
-    mov count, rdx
+    cmp rcx, limit
+    jb count_loop
+    add rax, 1
+    mov count, rax
 
     ; --- Bấm giờ kết thúc ---
     call GetTickCount
