@@ -1,4 +1,4 @@
-; prime_sieve_extreme_fix.asm
+; prime_sieve_extreme_fixed.asm
 OPTION CASEMAP:NONE
 
 extrn GetStdHandle:proc
@@ -32,30 +32,37 @@ hStdOut     QWORD ?
 hStdIn      QWORD ?
 
 .CODE
-; --- thao tác bit ---
+; --- Macro set / clear / test bit bằng mask ---
 set_bit MACRO arr, idx
     mov rax, idx
     shr rax, 3
-    mov rbx, idx
-    and bl, 7          ; chỉ 8-bit cho bts
-    bts BYTE PTR arr[rax], bl
+    mov rcx, idx
+    and rcx, 7
+    mov rdx, 1
+    shl rdx, cl
+    or BYTE PTR arr[rax], dl
 ENDM
 
 clear_bit MACRO arr, idx
     mov rax, idx
     shr rax, 3
-    mov rbx, idx
-    and bl, 7
-    btr BYTE PTR arr[rax], bl
+    mov rcx, idx
+    and rcx, 7
+    mov rdx, 1
+    shl rdx, cl
+    not dl
+    and BYTE PTR arr[rax], dl
 ENDM
 
 test_bit MACRO arr, idx, out
     mov rax, idx
     shr rax, 3
-    mov rbx, idx
-    and bl, 7
-    bt BYTE PTR arr[rax], bl
-    setc out
+    mov rcx, idx
+    and rcx, 7
+    mov rdx, BYTE PTR arr[rax]
+    shr dl, cl
+    and dl, 1
+    mov out, dl
 ENDM
 
 main PROC
@@ -114,6 +121,7 @@ count_loop:
     shl rax, 1
     cmp rax, limit
     ja count_done
+    mov al, 0
     test_bit is_prime, rcx, al
     cmp al, 0
     je skip_inc
