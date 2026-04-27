@@ -12,17 +12,16 @@ extrn CloseHandle:proc
     limit EQU 10000000
     max_idx EQU 4999998
     qword_count EQU 78125
-    num_threads EQU 4           ; Tối ưu cho CPU 4 luồng
+    num_threads EQU 4           ; Số luồng chạy song song
 
-    msg_hdr  db "--- ASM (4 THREADS PARALLEL) ---", 10, "So nguyen to tim duoc (<10000000): ", 0
+    msg_hdr  db "--- ASM (4 THREADS PARALLEL - SAFE ALIGNED) ---", 10, "So nguyen to tim duoc (<10000000): ", 0
     msg_time db 10, "Thoi gian chay: ", 0
     msg_ms   db " ms", 10, "Nhan Enter de thoat...", 10, 0
 
 .data?
     ALIGN 8
-    is_comp db 625000 dup(?)
+    is_comp db 625000 dup(?)    ; 625 KB (5 triệu bit)
     
-    ; Bộ đệm quản lý Đa luồng
     thread_handles dq 4 dup(?)
     thread_ids     dd 4 dup(?)
     
@@ -34,36 +33,37 @@ extrn CloseHandle:proc
 
 .code
 ; =====================================================================
-; THREAD WORKER: Hàm thực thi song song trên các lõi CPU
+; THREAD WORKER: Hàm thực thi song song
 ; Input: RCX = Thread ID (0, 1, 2, 3)
 ; =====================================================================
 SieveWorker proc
     lea r8, is_comp
-    mov r9, rcx                 ; r9 = i = ID của luồng (0, 1, 2 hoặc 3)
+    mov r9, rcx                 
 
 outer_loop:
-    bt [r8], r9
-    jc next_p                   ; Nếu là hợp số, bỏ qua
+    ; Đã thêm qword ptr để an toàn tuyệt đối cho bộ nhớ
+    bt qword ptr [r8], r9
+    jc next_p                   
 
-    lea r10, [r9*2 + 3]         ; r10 = p = 2*i + 3
+    lea r10, [r9*2 + 3]         
     mov rax, r10
-    imul rax, r10               ; p * p
+    imul rax, r10               
     cmp rax, limit
-    jg thread_exit              ; Nếu p*p > limit -> Luồng này đã xong việc!
+    jg thread_exit              
 
     sub rax, 3
     shr rax, 1
-    mov r11, rax                ; r11 = j = Bắt đầu vòng lặp trong
+    mov r11, rax                
 
 inner_loop:
-    ; BẮT BUỘC phải có tiền tố "LOCK" để chống Data Race giữa 4 lõi CPU
-    lock bts [r8], r11          
+    ; Tiền tố LOCK kết hợp chỉ định rõ qword ptr
+    lock bts qword ptr [r8], r11          
     add r11, r10                
     cmp r11, max_idx
     jbe inner_loop
 
 next_p:
-    add r9, num_threads         ; Luồng 0 làm: 0, 4, 8... Luồng 1 làm: 1, 5, 9... (Chia việc đều nhau)
+    add r9, num_threads         
     jmp outer_loop
 
 thread_exit:
@@ -72,10 +72,13 @@ thread_exit:
 SieveWorker endp
 
 ; =====================================================================
-; HÀM MAIN: Quản lý và Đồng bộ hóa luồng
+; HÀM MAIN: Quản lý luồng và Đồng bộ
 ; =====================================================================
 main proc
-    sub rsp, 48h
+    ; [TỐI ƯU STACK]: Cấp phát 56 bytes (38h) MỘT LẦN DUY NHẤT
+    ; (32 bytes Shadow Space + 24 bytes cho các tham số thứ 5,6)
+    ; Stack sẽ luôn Aligned 16-byte hoàn hảo!
+    sub rsp, 38h
 
     lea rcx, freq
     call QueryPerformanceFrequency
@@ -83,51 +86,47 @@ main proc
     lea rcx, start_t
     call QueryPerformanceCounter
 
-    ; 1. Khởi tạo 4 luồng phần cứng (Spawn Threads)
-    xor r12, r12                ; r12 = thread_index = 0
+    ; 1. Khởi tạo 4 luồng phần cứng
+    xor r12, r12                
 spawn_loop:
-    ; Cấp phát tham số cho CreateThread
-    sub rsp, 30h
-    mov rcx, 0                  ; lpThreadAttributes = NULL
-    mov rdx, 0                  ; dwStackSize = 0 (Default)
-    lea r8, SieveWorker         ; lpStartAddress = Địa chỉ hàm Worker
-    mov r9, r12                 ; lpParameter = ID luồng (Truyền vào RCX của Worker)
-    mov qword ptr [rsp+20h], 0  ; dwCreationFlags = 0 (Chạy ngay lập tức)
-    lea rax, thread_ids
-    mov [rsp+28h], rax          ; lpThreadId
-    call CreateThread
-    add rsp, 30h
+    mov rcx, 0                  ; Arg 1: lpThreadAttributes
+    mov rdx, 0                  ; Arg 2: dwStackSize
+    lea r8, SieveWorker         ; Arg 3: lpStartAddress
+    mov r9, r12                 ; Arg 4: lpParameter = ID luồng
+    mov qword ptr [rsp+20h], 0  ; Arg 5: dwCreationFlags
     
-    ; Lưu Handle của luồng
+    ; Đẩy ID luồng vào đúng slot của mảng (r12 * 4 bytes)
+    lea rax, thread_ids
+    lea rax, [rax + r12*4]
+    mov [rsp+28h], rax          ; Arg 6: lpThreadId
+    
+    call CreateThread
+    
     lea rbx, thread_handles
-    mov [rbx + r12*8], rax
+    mov [rbx + r12*8], rax      ; Lưu Handle lại để chờ
     
     inc r12
     cmp r12, num_threads
     jl spawn_loop
 
-    ; 2. Đợi cả 4 luồng làm xong việc (Wait Barrier)
-    sub rsp, 28h
-    mov rcx, num_threads        ; nCount = 4
-    lea rdx, thread_handles     ; lpHandles
-    mov r8, 1                   ; bWaitAll = TRUE (Đợi TẤT CẢ cùng xong)
-    mov r9, -1                  ; dwMilliseconds = INFINITE
+    ; 2. Đợi TẤT CẢ các luồng làm xong
+    mov rcx, num_threads        ; Arg 1: nCount = 4
+    lea rdx, thread_handles     ; Arg 2: lpHandles
+    mov r8, 1                   ; Arg 3: bWaitAll = TRUE
+    mov r9, -1                  ; Arg 4: dwMilliseconds = INFINITE
     call WaitForMultipleObjects
-    add rsp, 28h
 
-    ; Đóng Handle dọn rác hệ thống
+    ; Đóng Handle
     xor r12, r12
 close_loop:
-    sub rsp, 28h
     lea rbx, thread_handles
     mov rcx, [rbx + r12*8]
     call CloseHandle
-    add rsp, 28h
     inc r12
     cmp r12, num_threads
     jl close_loop
 
-    ; 3. Đếm tổng hợp số (Đơn luồng siêu tốc POPCNT)
+    ; 3. Đếm tổng số lượng bằng POPCNT
     xor r11, r11
     lea rsi, is_comp
     mov rcx, qword_count
@@ -138,7 +137,7 @@ count_loop:
     dec rcx
     jnz count_loop
 
-    ; Tính nguyên tố: 5000000 - Hợp số
+    ; 5,000,000 - số hợp số = số nguyên tố
     mov rax, 5000000
     sub rax, r11
     mov r11, rax
@@ -152,9 +151,9 @@ count_loop:
     mov rcx, 1000
     mul rcx
     div qword ptr [freq]
-    mov r10, rax                ; ms
+    mov r10, rax                
 
-    ; In ấn
+    ; 5. In ấn
     lea rdi, str_buf
     lea rsi, msg_hdr
     call copy_string
@@ -208,8 +207,8 @@ copy_string endp
 
 itoa proc
     mov rbx, 10
-    sub rsp, 40h
-    lea r9, [rsp + 30h]
+    sub rsp, 28h                ; Đã sửa lại Stack Alignment cho hàm con
+    lea r9, [rsp + 18h]
 L_div_loop:
     xor rdx, rdx
     div rbx
@@ -223,10 +222,10 @@ L_write_loop:
     mov [rdi], al
     inc rdi
     inc r9
-    lea rcx, [rsp + 30h]
+    lea rcx, [rsp + 18h]
     cmp r9, rcx
     jne L_write_loop
-    add rsp, 40h
+    add rsp, 28h
     ret
 itoa endp
 
