@@ -1,180 +1,138 @@
 const std = @import("std");
 const windows = std.os.windows;
 
-// --- Win32 API ---
-extern "kernel32" fn AllocConsole() callconv(.C) windows.BOOL;
-extern "kernel32" fn FreeConsole() callconv(.C) windows.BOOL;
-extern "kernel32" fn GetStdHandle(nStdHandle: windows.DWORD) callconv(.C) ?windows.HANDLE;
-extern "kernel32" fn GetConsoleMode(hConsoleHandle: windows.HANDLE, lpMode: *windows.DWORD) callconv(.C) windows.BOOL;
-extern "kernel32" fn SetConsoleMode(hConsoleHandle: windows.HANDLE, dwMode: windows.DWORD) callconv(.C) windows.BOOL;
-extern "kernel32" fn WriteConsoleA(hOut: windows.HANDLE, lpBuf: [*]const u8, nChars: windows.DWORD, lpWritten: *windows.DWORD, lpRes: ?*anyopaque) callconv(.C) windows.BOOL;
-extern "kernel32" fn WriteConsoleW(hOut: windows.HANDLE, lpBuf: [*]const u16, nChars: windows.DWORD, lpWritten: *windows.DWORD, lpRes: ?*anyopaque) callconv(.C) windows.BOOL;
-extern "kernel32" fn ReadConsoleInputW(hIn: windows.HANDLE, lpBuf: *INPUT_RECORD, nLen: windows.DWORD, lpRead: *windows.DWORD) callconv(.C) windows.BOOL;
-extern "kernel32" fn SetEnvironmentVariableW(lpName: [*:0]const u16, lpValue: [*:0]const u16) callconv(.C) windows.BOOL;
-extern "kernel32" fn CreateProcessW(lpApp: ?[*:0]const u16, lpCmd: ?[*:0]u16, lpProcAttr: ?*anyopaque, lpThrAttr: ?*anyopaque, bInherit: windows.BOOL, dwFlags: windows.DWORD, lpEnv: ?*anyopaque, lpDir: ?[*:0]const u16, lpSi: *STARTUPINFOW, lpPi: *PROCESS_INFORMATION) callconv(.C) windows.BOOL;
+// --- Win32 API Definitions ---
+extern "kernel32" fn GetConsoleWindow() callconv(.C) ?windows.HWND;
+extern "user32" fn ShowWindow(hWnd: windows.HWND, nCmdShow: i32) callconv(.C) windows.BOOL;
+extern "kernel32" fn SetConsoleOutputCP(wCodePageID: windows.DWORD) callconv(.C) windows.BOOL;
+extern "kernel32" fn SetEnvironmentVariableA(lpName: [*:0]const u8, lpValue: [*:0]const u8) callconv(.C) windows.BOOL;
 
-const STD_INPUT_HANDLE: windows.DWORD = @bitCast(@as(i32, -10));
-const STD_OUTPUT_HANDLE: windows.DWORD = @bitCast(@as(i32, -11));
-const ENABLE_VIRTUAL_TERMINAL_PROCESSING: windows.DWORD = 0x0004;
-const CREATE_NO_WINDOW: windows.DWORD = 0x08000000; // Cờ phép thuật ngăn nháy Console
+// --- Win API Helpers ---
+fn hideConsole() void {
+    if (GetConsoleWindow()) |hwnd| {
+        _ = ShowWindow(hwnd, 0); // 0 = SW_HIDE (Ẩn hoàn toàn khỏi Taskbar)
+    }
+}
 
-const STARTUPINFOW = extern struct {
-    cb: windows.DWORD, lpReserved: ?[*:0]u16 = null, lpDesktop: ?[*:0]u16 = null, lpTitle: ?[*:0]u16 = null,
-    dwX: windows.DWORD = 0, dwY: windows.DWORD = 0, dwXSize: windows.DWORD = 0, dwYSize: windows.DWORD = 0,
-    dwXCountChars: windows.DWORD = 0, dwYCountChars: windows.DWORD = 0, dwFillAttribute: windows.DWORD = 0,
-    dwFlags: windows.DWORD = 0, wShowWindow: windows.WORD = 0, cbReserved2: windows.WORD = 0,
-    lpReserved2: ?*u8 = null, hStdInput: ?windows.HANDLE = null, hStdOutput: ?windows.HANDLE = null, hStdError: ?windows.HANDLE = null,
-};
-const PROCESS_INFORMATION = extern struct { hProcess: ?windows.HANDLE, hThread: ?windows.HANDLE, dwProcessId: windows.DWORD, dwThreadId: windows.DWORD };
+fn showConsole() void {
+    if (GetConsoleWindow()) |hwnd| {
+        _ = ShowWindow(hwnd, 5); // 5 = SW_SHOW (Hiện lại)
+    }
+}
 
-const INPUT_RECORD = extern struct {
-    EventType: u16, pad: u16 = 0,
-    Event: extern union {
-        KeyEvent: extern struct { bKeyDown: i32, wRepeatCount: u16, wVirtualKeyCode: u16, wVirtualScanCode: u16, uChar: u16, dwControlKeyState: u32 },
-        padding: [16]u8,
-    },
+const NOISE_KEYWORDS = [_][]const u8{
+    "microsoft", "windows", "nvidia", "amd", "intel", "realtek", "cache",
+    "temp", "logs", "crash", "telemetry", "onedrive", "unity", "squirrel",
 };
 
-const NOISE_KEYWORDS = [_][]const u8{ "microsoft", "windows", "nvidia", "amd", "intel", "realtek", "cache", "temp", "logs", "crash", "telemetry", "onedrive", "unity" };
-const StubbornFolder = struct { tag: []const u8, name: []const u8 };
-const AppConfig = struct { selected_exe: []const u8, registry_keys: [][]const u8, stubborn_folders: []StubbornFolder };
+// --- Models ---
+const StubbornFolder = struct {
+    tag: []const u8,
+    name: []const u8,
+};
 
-// =====================================================================
-// TERMINAL UI
-// =====================================================================
-fn printTui(hOut: windows.HANDLE, comptime fmt: []const u8, args: anytype) void {
-    var buf: [1024]u8 = undefined;
-    if (std.fmt.bufPrint(&buf, fmt, args)) |str| {
-        var w: windows.DWORD = 0; _ = WriteConsoleA(hOut, str.ptr, @as(u32, @intCast(str.len)), &w, null);
-    } else |_| {}
-}
-fn printTuiW(hOut: windows.HANDLE, allocator: std.mem.Allocator, str: []const u8) void {
-    if (std.unicode.utf8ToUtf16LeAlloc(allocator, str)) |utf16| {
-        defer allocator.free(utf16);
-        var w: windows.DWORD = 0; _ = WriteConsoleW(hOut, utf16.ptr, @as(u32, @intCast(utf16.len)), &w, null);
-    } else |_| {}
-}
-fn readKey(hIn: windows.HANDLE) !enum { Up, Down, Space, Enter, None } {
-    var record: INPUT_RECORD = undefined; var read: windows.DWORD = 0;
-    while (true) {
-        if (ReadConsoleInputW(hIn, &record, 1, &read) == 0) return error.ReadFailed;
-        if (read > 0 and record.EventType == 1 and record.Event.KeyEvent.bKeyDown != 0) {
-            switch (record.Event.KeyEvent.wVirtualKeyCode) {
-                0x26 => return .Up, 0x28 => return .Down, 0x20 => return .Space, 0x0D => return .Enter, else => {},
-            }
-        }
-    }
-}
-fn tuiSingleSelect(hIn: windows.HANDLE, hOut: windows.HANDLE, alloc: std.mem.Allocator, title: []const u8, items: [][]const u8) !usize {
-    var sel: usize = 0;
-    while (true) {
-        printTui(hOut, "\x1b[2J\x1b[H\x1b[36m{s}\x1b[0m\r\n\r\n", .{title});
-        for (items, 0..) |item, i| {
-            if (i == sel) printTui(hOut, "\x1b[32m  > \x1b[0m", .{}) else printTui(hOut, "    ", .{});
-            printTuiW(hOut, alloc, item); printTui(hOut, "\r\n", .{});
-        }
-        switch (try readKey(hIn)) {
-            .Up => if (sel > 0) { sel -= 1; } else { sel = items.len - 1; },
-            .Down => if (sel < items.len - 1) { sel += 1; } else { sel = 0; },
-            .Enter => return sel, else => {},
-        }
-    }
-}
-fn tuiMultiSelect(hIn: windows.HANDLE, hOut: windows.HANDLE, alloc: std.mem.Allocator, title: []const u8, items: [][]const u8, checked: []bool) !void {
-    var sel: usize = 0;
-    while (true) {
-        printTui(hOut, "\x1b[2J\x1b[H\x1b[36m{s}\x1b[0m\r\n\x1b[90m(Nav: Up/Down | Toggle: Space | Confirm: Enter)\x1b[0m\r\n\r\n", .{title});
-        for (items, 0..) |item, i| {
-            if (i == sel) printTui(hOut, "\x1b[32m  > \x1b[0m", .{}) else printTui(hOut, "    ", .{});
-            if (checked[i]) printTui(hOut, "\x1b[32m[x] \x1b[0m", .{}) else printTui(hOut, "[ ] ", .{});
-            printTuiW(hOut, alloc, item); printTui(hOut, "\r\n", .{});
-        }
-        switch (try readKey(hIn)) {
-            .Up => if (sel > 0) { sel -= 1; } else { sel = items.len - 1; },
-            .Down => if (sel < items.len - 1) { sel += 1; } else { sel = 0; },
-            .Space => checked[sel] = !checked[sel],
-            .Enter => return, else => {},
-        }
-    }
-}
+const AppConfig = struct {
+    selected_exe: []const u8,
+    registry_keys: [][]const u8,
+    stubborn_folders: []StubbornFolder,
+};
 
-// =====================================================================
-// CORE ENGINE
-// =====================================================================
+// --- Main Engine ---
 const Engine = struct {
     allocator: std.mem.Allocator,
-    p_data: []const u8, cfg_file: []const u8, reg_dir: []const u8,
-    // [ĐÃ SỬA]: Lưu đường dẫn thật của máy tính từ đầu, không bị ảnh hưởng bởi setupEnv
-    real_roam: []const u8, real_local: []const u8, real_low: []const u8, real_docs: []const u8,
+    p_data: []const u8,
+    cfg_file: []const u8,
+    reg_backup: []const u8,
 
     pub fn init(allocator: std.mem.Allocator) !Engine {
         const cwd = try std.process.getCwdAlloc(allocator);
         const p_data = try std.fs.path.join(allocator, &[_][]const u8{ cwd, "Portable_Data" });
-        
-        const local = std.process.getEnvVarOwned(allocator, "LOCALAPPDATA") catch "";
-        const low = if (local.len > 0) try std.fs.path.join(allocator, &[_][]const u8{ std.fs.path.dirname(local).?, "LocalLow" }) else "";
-        const profile = std.process.getEnvVarOwned(allocator, "USERPROFILE") catch "";
-        const docs = if (profile.len > 0) try std.fs.path.join(allocator, &[_][]const u8{ profile, "Documents" }) else "";
-
+        const config_dir = try std.fs.path.join(allocator, &[_][]const u8{ p_data, "config" });
+        const reg_dir = try std.fs.path.join(allocator, &[_][]const u8{ p_data, "Registry" });
         return Engine{
-            .allocator = allocator, .p_data = p_data,
-            .cfg_file = try std.fs.path.join(allocator, &[_][]const u8{ p_data, "config", "config.json" }),
-            .reg_dir = try std.fs.path.join(allocator, &[_][]const u8{ p_data, "Registry" }),
-            .real_roam = std.process.getEnvVarOwned(allocator, "APPDATA") catch "",
-            .real_local = local, .real_low = low, .real_docs = docs,
+            .allocator = allocator,
+            .p_data = p_data,
+            .cfg_file = try std.fs.path.join(allocator, &[_][]const u8{ config_dir, "config.json" }),
+            .reg_backup = try std.fs.path.join(allocator, &[_][]const u8{ reg_dir, "data.reg" }),
         };
     }
 
-    pub fn getSysRoot(self: *const Engine, tag: []const u8) []const u8 {
-        if (std.mem.eql(u8, tag, "ROAM")) return self.real_roam;
-        if (std.mem.eql(u8, tag, "LOCAL")) return self.real_local;
-        if (std.mem.eql(u8, tag, "LOW")) return self.real_low;
-        if (std.mem.eql(u8, tag, "DOCS")) return self.real_docs;
-        return "";
+    pub fn bootstrap(self: *const Engine) !void {
+        try std.fs.cwd().makePath(try std.fs.path.join(self.allocator, &[_][]const u8{ self.p_data, "config" }));
+        try std.fs.cwd().makePath(try std.fs.path.join(self.allocator, &[_][]const u8{ self.p_data, "Registry" }));
     }
 
     pub fn setupEnv(self: *const Engine) !void {
         const roam = try std.fs.path.join(self.allocator, &[_][]const u8{ self.p_data, "AppData", "Roaming" });
         const local = try std.fs.path.join(self.allocator, &[_][]const u8{ self.p_data, "AppData", "Local" });
         const docs = try std.fs.path.join(self.allocator, &[_][]const u8{ self.p_data, "Documents" });
-        try std.fs.cwd().makePath(roam); try std.fs.cwd().makePath(local); try std.fs.cwd().makePath(docs);
 
-        try setEnvW(self.allocator, "APPDATA", roam);
-        try setEnvW(self.allocator, "LOCALAPPDATA", local);
-        try setEnvW(self.allocator, "USERPROFILE", self.p_data);
-        try setEnvW(self.allocator, "DOCUMENTS", docs);
+        try std.fs.cwd().makePath(roam);
+        try std.fs.cwd().makePath(local);
+        try std.fs.cwd().makePath(docs);
+
+        _ = SetEnvironmentVariableA("APPDATA", try self.allocator.dupeZ(u8, roam));
+        _ = SetEnvironmentVariableA("LOCALAPPDATA", try self.allocator.dupeZ(u8, local));
+        _ = SetEnvironmentVariableA("USERPROFILE", try self.allocator.dupeZ(u8, self.p_data));
+        _ = SetEnvironmentVariableA("DOCUMENTS", try self.allocator.dupeZ(u8, docs));
+    }
+
+    pub fn getSysRoot(self: *const Engine, tag: []const u8) ![]const u8 {
+        if (std.mem.eql(u8, tag, "ROAM")) return std.process.getEnvVarOwned(self.allocator, "APPDATA") catch "";
+        if (std.mem.eql(u8, tag, "LOCAL")) return std.process.getEnvVarOwned(self.allocator, "LOCALAPPDATA") catch "";
+        if (std.mem.eql(u8, tag, "LOW")) {
+            const local = std.process.getEnvVarOwned(self.allocator, "LOCALAPPDATA") catch return "";
+            return try std.fs.path.join(self.allocator, &[_][]const u8{ std.fs.path.dirname(local).?, "LocalLow" });
+        }
+        if (std.mem.eql(u8, tag, "DOCS")) {
+            const profile = std.process.getEnvVarOwned(self.allocator, "USERPROFILE") catch return "";
+            return try std.fs.path.join(self.allocator, &[_][]const u8{ profile, "Documents" });
+        }
+        return "";
+    }
+
+    pub fn mapPortPath(self: *const Engine, tag: []const u8, folder_name: []const u8) ![]const u8 {
+        if (std.mem.eql(u8, tag, "ROAM")) return std.fs.path.join(self.allocator, &[_][]const u8{ self.p_data, "AppData", "Roaming", folder_name });
+        if (std.mem.eql(u8, tag, "LOCAL")) return std.fs.path.join(self.allocator, &[_][]const u8{ self.p_data, "AppData", "Local", folder_name });
+        if (std.mem.eql(u8, tag, "LOW")) return std.fs.path.join(self.allocator, &[_][]const u8{ self.p_data, "AppData", "LocalLow", folder_name });
+        return std.fs.path.join(self.allocator, &[_][]const u8{ self.p_data, "Documents", folder_name });
     }
 };
 
-fn setEnvW(allocator: std.mem.Allocator, name: []const u8, value: []const u8) !void {
-    const n_w = try std.unicode.utf8ToUtf16LeAllocZ(allocator, name); defer allocator.free(n_w);
-    const v_w = try std.unicode.utf8ToUtf16LeAllocZ(allocator, value); defer allocator.free(v_w);
-    _ = SetEnvironmentVariableW(n_w.ptr, v_w.ptr);
+fn runCmdNoWindow(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    var child = std.process.Child.init(args, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    _ = child.spawnAndWait() catch {};
 }
 
-// [ĐÃ SỬA]: Chạy Process âm thầm tuyệt đối (Triệt tiêu chớp Console)
-fn runHiddenCmd(allocator: std.mem.Allocator, cmd: []const u8) !void {
-    var si = std.mem.zeroes(STARTUPINFOW); si.cb = @sizeOf(STARTUPINFOW);
-    var pi: PROCESS_INFORMATION = undefined;
-    const cmd_w = try std.unicode.utf8ToUtf16LeAllocZ(allocator, cmd); defer allocator.free(cmd_w);
-    
-    // Gọi CreateProcessW với cờ CREATE_NO_WINDOW
-    if (CreateProcessW(null, cmd_w.ptr, null, null, windows.FALSE, CREATE_NO_WINDOW, null, null, &si, &pi) != 0) {
-        _ = windows.kernel32.WaitForSingleObject(pi.hProcess.?, windows.INFINITE);
-        _ = windows.kernel32.CloseHandle(pi.hProcess.?);
-        _ = windows.kernel32.CloseHandle(pi.hThread.?);
+fn containsNoise(name: []const u8) bool {
+    var lower_buf: [256]u8 = undefined;
+    const len = @min(name.len, 256);
+    const lower = std.ascii.lowerString(&lower_buf, name[0..len]);
+    for (NOISE_KEYWORDS) |noise| {
+        if (std.mem.indexOf(u8, lower, noise) != null) return true;
     }
+    return false;
 }
 
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator); defer arena.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
     const allocator = arena.allocator();
+
+    // Fix lỗi "Language: 0": Set Codepage im lặng qua API
+    _ = SetConsoleOutputCP(65001);
+
     var engine = try Engine.init(allocator);
 
     if (std.fs.cwd().openFile(engine.cfg_file, .{})) |file| {
-        const content = try file.readToEndAlloc(allocator, 1024 * 1024); file.close();
+        const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+        file.close();
         if (std.json.parseFromSlice(AppConfig, allocator, content, .{ .ignore_unknown_fields = true })) |parsed| {
-            try runSandbox(&engine, parsed.value); return;
+            try runSandbox(&engine, parsed.value);
+            return;
         } else |_| {}
     } else |_| {}
 
@@ -182,196 +140,259 @@ pub fn main() !void {
 }
 
 fn learningMode(engine: *Engine, allocator: std.mem.Allocator) !void {
-    const self_name = std.fs.path.basename(try std.fs.selfExePathAlloc(allocator));
+    // 1. Tự lấy tên chính mình để loại trừ
+    const self_path = try std.fs.selfExePathAlloc(allocator);
+    const self_name = std.fs.path.basename(self_path);
+
     var exes = std.ArrayList([]const u8).init(allocator);
     var dir = try std.fs.cwd().openDir(".", .{ .iterate = true });
     var it = dir.iterate();
     while (try it.next()) |entry| {
-        if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".exe") and !std.mem.eql(u8, entry.name, self_name)) {
-            try exes.append(try allocator.dupe(u8, entry.name));
+        if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".exe")) {
+            // Không hardcode "portable_run.exe" nữa
+            if (!std.mem.eql(u8, entry.name, self_name)) {
+                try exes.append(try allocator.dupe(u8, entry.name));
+            }
         }
     }
     dir.close();
-    if (exes.items.len == 0) return;
 
-    var selected_exe: []const u8 = exes.items[0];
-    if (exes.items.len > 1) {
-        _ = AllocConsole();
-        const hIn = GetStdHandle(STD_INPUT_HANDLE).?; const hOut = GetStdHandle(STD_OUTPUT_HANDLE).?;
-        var mode: windows.DWORD = 0; _ = GetConsoleMode(hOut, &mode); _ = SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-        printTui(hOut, "\x1b[?25l", .{});
-        
-        const choice = try tuiSingleSelect(hIn, hOut, allocator, "Multiple EXEs found. Select main app:", exes.items);
-        selected_exe = exes.items[choice];
-        printTui(hOut, "\x1b[?25h\x1b[2J\x1b[H", .{}); _ = FreeConsole();
+    if (exes.items.len == 0) {
+        std.debug.print("[ERROR] No executable found.\n", .{});
+        return; // Bỏ sleep gây chậm chạp
     }
 
-    try std.fs.cwd().makePath(engine.reg_dir);
-    var reg_before = std.StringHashMap(void).init(allocator); try snapshotRegistry(&reg_before, allocator);
-    var folders_before = std.StringHashMap(void).init(allocator); try snapshotFolders(engine, &folders_before, allocator);
+    try engine.bootstrap();
+
+    var selected_exe: []const u8 = "";
+    if (exes.items.len == 1) {
+        selected_exe = exes.items[0];
+    } else {
+        std.debug.print("Select target (enter number):\n", .{});
+        for (exes.items, 0..) |exe, i| {
+            std.debug.print("{d}: {s}\n", .{ i, exe });
+        }
+        
+        var input_buf: [10]u8 = undefined;
+        const stdin = std.io.getStdIn().reader();
+        if (stdin.readUntilDelimiterOrEof(&input_buf, '\n') catch null) |line| {
+            const trimmed = std.mem.trim(u8, line, "\r \t");
+            const choice = std.fmt.parseInt(usize, trimmed, 10) catch 0;
+            if (choice < exes.items.len) {
+                selected_exe = exes.items[choice];
+            } else {
+                selected_exe = exes.items[0];
+            }
+        } else {
+            selected_exe = exes.items[0];
+        }
+    }
+
+    var reg_before = std.StringHashMap(void).init(allocator);
+    try snapshotRegistry(&reg_before, allocator);
+    
+    var folders_before = std.StringHashMap(void).init(allocator);
+    try snapshotFolders(engine, &folders_before, allocator);
 
     try engine.setupEnv();
 
+    // Ẩn Terminal đi trước khi khởi động Game/App
+    hideConsole();
+
+    // Ghép đường dẫn an toàn "./app.exe"
     const run_path = try std.fs.path.join(allocator, &[_][]const u8{ ".", selected_exe });
-    var child = std.process.Child.init(&[_][]const u8{run_path}, allocator); _ = try child.spawnAndWait();
+    var child = std.process.Child.init(&[_][]const u8{run_path}, allocator);
+    _ = try child.spawnAndWait();
 
-    var reg_after = std.StringHashMap(void).init(allocator); try snapshotRegistry(&reg_after, allocator);
-    var folders_after = std.StringHashMap(void).init(allocator); try snapshotFolders(engine, &folders_after, allocator);
+    // Hiện lại Terminal sau khi Game tắt để hỏi ý kiến
+    showConsole();
 
-    var tui_items = std.ArrayList([]const u8).init(allocator);
-    var tui_checked = std.ArrayList(bool).init(allocator);
+    var reg_after = std.StringHashMap(void).init(allocator);
+    try snapshotRegistry(&reg_after, allocator);
+    
+    var folders_after = std.StringHashMap(void).init(allocator);
+    try snapshotFolders(engine, &folders_after, allocator);
 
-    var rit = reg_after.keyIterator();
-    while (rit.next()) |key| {
+    var reg_candidates = std.ArrayList([]const u8).init(allocator);
+    var reg_it = reg_after.keyIterator();
+    while (reg_it.next()) |key| {
         if (!reg_before.contains(key.*) and !containsNoise(key.*)) {
-            try tui_items.append(try std.fmt.allocPrint(allocator, "[REG] {s}", .{key.*}));
-            try tui_checked.append(true);
+            try reg_candidates.append(key.*);
         }
     }
-    var fit = folders_after.keyIterator();
-    while (fit.next()) |key| {
+
+    var stubborn_candidates = std.ArrayList(StubbornFolder).init(allocator);
+    var fold_it = folders_after.keyIterator();
+    while (fold_it.next()) |key| {
         if (!folders_before.contains(key.*) and !containsNoise(key.*)) {
             var split = std.mem.splitScalar(u8, key.*, '|');
-            try tui_items.append(try std.fmt.allocPrint(allocator, "[DIR] [{s}] {s}", .{split.next().?, split.next().?}));
-            try tui_checked.append(true);
+            try stubborn_candidates.append(.{ .tag = split.next().?, .name = split.next().? });
         }
     }
 
-    var final_reg = std.ArrayList([]const u8).init(allocator);
-    var final_folders = std.ArrayList(StubbornFolder).init(allocator);
+    if (reg_candidates.items.len == 0 and stubborn_candidates.items.len == 0) {
+        try saveConfig(engine, allocator, selected_exe, &[_][]const u8{}, &[_]StubbornFolder{});
+        return;
+    }
 
-    if (tui_items.items.len > 0) {
-        _ = AllocConsole();
-        const hIn = GetStdHandle(STD_INPUT_HANDLE).?; const hOut = GetStdHandle(STD_OUTPUT_HANDLE).?;
-        var mode: windows.DWORD = 0; _ = GetConsoleMode(hOut, &mode); _ = SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-        printTui(hOut, "\x1b[?25l", .{});
-        
-        try tuiMultiSelect(hIn, hOut, allocator, "System changes detected! Select items:", tui_items.items, tui_checked.items);
-        printTui(hOut, "\x1b[?25h\x1b[2J\x1b[H", .{}); _ = FreeConsole();
+    var selected_reg = std.ArrayList([]const u8).init(allocator);
+    if (reg_candidates.items.len > 0) {
+        std.debug.print("\nFound new Registry keys. Keep which ones? (comma separated, e.g. 0,2 or empty for none):\n", .{});
+        for (reg_candidates.items, 0..) |r, i| std.debug.print("{d}: {s}\n", .{ i, r });
+        try parseMultiSelect(allocator, reg_candidates.items, &selected_reg);
+    }
 
-        var i: usize = 0;
-        rit = reg_after.keyIterator();
-        while (rit.next()) |key| {
-            if (!reg_before.contains(key.*) and !containsNoise(key.*)) {
-                if (tui_checked.items[i]) try final_reg.append(key.*); i += 1;
-            }
-        }
-        fit = folders_after.keyIterator();
-        while (fit.next()) |key| {
-            if (!folders_before.contains(key.*) and !containsNoise(key.*)) {
-                if (tui_checked.items[i]) {
-                    var split = std.mem.splitScalar(u8, key.*, '|');
-                    const tag = split.next().?; const name = split.next().?;
-                    const origin = try std.fs.path.join(allocator, &[_][]const u8{ engine.getSysRoot(tag), name });
-                    const dest = try std.fs.path.join(allocator, &[_][]const u8{ engine.p_data, tag, name });
-                    try std.fs.cwd().makePath(std.fs.path.dirname(dest).?);
-                    
-                    const copy_cmd = try std.fmt.allocPrint(allocator, "robocopy \"{s}\" \"{s}\" /E /MOVE /NFL /NDL /NJH /NJS /NC /NS /NP", .{origin, dest});
-                    try runHiddenCmd(allocator, copy_cmd);
-                    try final_folders.append(.{ .tag = tag, .name = name });
-                }
-                i += 1;
-            }
+    var selected_folders = std.ArrayList(StubbornFolder).init(allocator);
+    if (stubborn_candidates.items.len > 0) {
+        std.debug.print("\nFound new stubborn folders. Keep which ones? (comma separated, e.g. 0,1 or empty for none):\n", .{});
+        for (stubborn_candidates.items, 0..) |f, i| std.debug.print("{d}: [{s}] {s}\n", .{ i, f.tag, f.name });
+        try parseMultiSelect(allocator, stubborn_candidates.items, &selected_folders);
+
+        for (selected_folders.items) |f| {
+            const origin = try std.fs.path.join(allocator, &[_][]const u8{ try engine.getSysRoot(f.tag), f.name });
+            const dest = try engine.mapPortPath(f.tag, f.name);
+            try std.fs.cwd().makePath(std.fs.path.dirname(dest).?);
+            try runCmdNoWindow(allocator, &[_][]const u8{ "robocopy", origin, dest, "/E", "/MOVE", "/NFL", "/NDL", "/NJH", "/NJS", "/R:3", "/W:1" });
         }
     }
-    try saveConfig(engine, allocator, selected_exe, final_reg.items, final_folders.items);
-    try syncRegistry(engine, allocator, final_reg.items);
+
+    try saveConfig(engine, allocator, selected_exe, selected_reg.items, selected_folders.items);
+    try syncRegistry(engine, allocator, selected_reg.items);
 }
 
 fn runSandbox(engine: *Engine, config: AppConfig) !void {
-    try std.fs.cwd().makePath(engine.reg_dir);
-    // [ĐÃ SỬA]: Import toàn bộ các file .reg trong thư mục Registry
-    if (std.fs.cwd().openDir(engine.reg_dir, .{ .iterate = true })) |rdir| {
-        var it = rdir.iterate();
-        while (try it.next()) |entry| {
-            if (std.mem.endsWith(u8, entry.name, ".reg")) {
-                const reg_file = try std.fs.path.join(engine.allocator, &[_][]const u8{ engine.reg_dir, entry.name });
-                const import_cmd = try std.fmt.allocPrint(engine.allocator, "reg import \"{s}\"", .{reg_file});
-                try runHiddenCmd(engine.allocator, import_cmd);
-            }
-        }
+    // Ẩn Terminal đi ngay lập tức (Chế độ Sandbox không cần hiện gì cả)
+    hideConsole();
+
+    try engine.bootstrap();
+
+    if (config.registry_keys.len == 0 and config.stubborn_folders.len == 0) {
+        try engine.setupEnv();
+        const run_path = try std.fs.path.join(engine.allocator, &[_][]const u8{ ".", config.selected_exe });
+        var child = std.process.Child.init(&[_][]const u8{run_path}, engine.allocator);
+        _ = try child.spawnAndWait();
+        return;
+    }
+
+    if (std.fs.cwd().access(engine.reg_backup, .{})) {
+        try runCmdNoWindow(engine.allocator, &[_][]const u8{ "reg", "import", engine.reg_backup });
     } else |_| {}
 
     var junctions = std.ArrayList([]const u8).init(engine.allocator);
     for (config.stubborn_folders) |f| {
-        const origin = try std.fs.path.join(engine.allocator, &[_][]const u8{ engine.getSysRoot(f.tag), f.name });
-        const dest = try std.fs.path.join(engine.allocator, &[_][]const u8{ engine.p_data, f.tag, f.name });
+        const sys_root = try engine.getSysRoot(f.tag);
+        const origin = try std.fs.path.join(engine.allocator, &[_][]const u8{ sys_root, f.name });
+        const dest = try engine.mapPortPath(f.tag, f.name);
+
         if (std.fs.cwd().access(origin, .{})) {} else |err| {
             if (err == error.FileNotFound) {
-                const lnk_cmd = try std.fmt.allocPrint(engine.allocator, "cmd /c mklink /J \"{s}\" \"{s}\"", .{origin, dest});
-                try runHiddenCmd(engine.allocator, lnk_cmd);
+                try runCmdNoWindow(engine.allocator, &[_][]const u8{ "cmd", "/c", "mklink", "/J", origin, dest });
                 try junctions.append(origin);
             }
         }
     }
 
     try engine.setupEnv();
+
     const run_path = try std.fs.path.join(engine.allocator, &[_][]const u8{ ".", config.selected_exe });
-    var child = std.process.Child.init(&[_][]const u8{run_path}, engine.allocator); _ = try child.spawnAndWait();
+    var child = std.process.Child.init(&[_][]const u8{run_path}, engine.allocator);
+    _ = try child.spawnAndWait();
 
     for (junctions.items) |j| {
-        const rm_cmd = try std.fmt.allocPrint(engine.allocator, "cmd /c rmdir \"{s}\"", .{j});
-        try runHiddenCmd(engine.allocator, rm_cmd);
+        try runCmdNoWindow(engine.allocator, &[_][]const u8{ "cmd", "/c", "rmdir", j });
     }
+
     try syncRegistry(engine, engine.allocator, config.registry_keys);
 }
 
+// --- Helpers Logic ---
 fn snapshotFolders(engine: *Engine, set: *std.StringHashMap(void), allocator: std.mem.Allocator) !void {
     const tags = [_][]const u8{ "ROAM", "LOCAL", "LOW", "DOCS" };
     for (tags) |tag| {
-        const root = engine.getSysRoot(tag);
+        const root = try engine.getSysRoot(tag);
         if (root.len == 0) continue;
-        var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch continue; defer dir.close();
+        
+        var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch continue;
+        defer dir.close();
         var it = dir.iterate();
+        
         while (try it.next()) |entry| {
             if (entry.kind == .directory) {
-                try set.put(try std.fmt.allocPrint(allocator, "{s}|{s}", .{ tag, entry.name }), {});
+                // BỎ QUA THƯ MỤC PORTABLE_DATA CỦA CHÚNG TA (Fix lỗi lặp lại folder)
+                if (std.mem.eql(u8, entry.name, "Portable_Data")) continue;
+                
+                const key = try std.fmt.allocPrint(allocator, "{s}|{s}", .{ tag, entry.name });
+                try set.put(key, {});
             }
         }
     }
 }
 
 fn snapshotRegistry(set: *std.StringHashMap(void), allocator: std.mem.Allocator) !void {
-    // Dùng đường dẫn tuyệt đối ẩn thư mục temp để tránh rác
-    const tmp_file = "port_tmp_reg_snap.txt";
-    const cmd = try std.fmt.allocPrint(allocator, "cmd /c chcp 65001 >nul & reg query HKCU\\Software > {s}", .{tmp_file});
-    try runHiddenCmd(allocator, cmd);
+    var child = std.process.Child.init(&[_][]const u8{ "reg", "query", "HKCU\\Software" }, allocator);
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Ignore; // Bỏ qua lỗi rác
+    try child.spawn();
+    const stdout = try child.stdout.?.readToEndAlloc(allocator, 1024 * 1024);
+    _ = try child.wait();
     
-    if (std.fs.cwd().openFile(tmp_file, .{})) |file| {
-        const content = try file.readToEndAlloc(allocator, 5 * 1024 * 1024); file.close();
-        var it = std.mem.tokenizeSequence(u8, content, "\r\n");
-        while (it.next()) |line| {
-            if (std.mem.startsWith(u8, line, "HKEY_CURRENT_USER\\Software\\")) {
-                try set.put(try allocator.dupe(u8, line), {});
-            }
+    var it = std.mem.tokenizeSequence(u8, stdout, "\r\n");
+    while (it.next()) |line| {
+        if (std.mem.startsWith(u8, line, "HKEY_CURRENT_USER\\Software\\")) {
+            try set.put(line, {});
         }
-        _ = std.fs.cwd().deleteFile(tmp_file) catch {};
-    } else |_| {}
+    }
 }
 
 fn syncRegistry(engine: *Engine, allocator: std.mem.Allocator, keys: [][]const u8) !void {
     if (keys.len == 0) return;
     
-    // [ĐÃ SỬA]: Xóa sạch thư mục Registry cũ để lưu mới toàn bộ
-    var rdir = try std.fs.cwd().openDir(engine.reg_dir, .{ .iterate = true });
-    var it = rdir.iterate();
-    while (try it.next()) |entry| { _ = rdir.deleteFile(entry.name) catch {}; }
-    rdir.close();
-
-    // Xuất từng key ra 0.reg, 1.reg cực kỳ an toàn
-    for (keys, 0..) |key, i| {
-        const reg_file = try std.fs.path.join(allocator, &[_][]const u8{ engine.reg_dir, try std.fmt.allocPrint(allocator, "{d}.reg", .{i}) });
-        const exp_cmd = try std.fmt.allocPrint(allocator, "reg export \"{s}\" \"{s}\" /y", .{key, reg_file});
-        try runHiddenCmd(allocator, exp_cmd);
+    _ = std.fs.cwd().deleteFile(engine.reg_backup) catch {};
+    const temp_reg = try std.fs.path.join(allocator, &[_][]const u8{ std.fs.path.dirname(engine.reg_backup).?, "port_tmp.reg" });
+    
+    for (keys) |key| {
+        try runCmdNoWindow(allocator, &[_][]const u8{ "reg", "export", key, temp_reg, "/y" });
         
-        const del_cmd = try std.fmt.allocPrint(allocator, "reg delete \"{s}\" /f", .{key});
-        try runHiddenCmd(allocator, del_cmd);
+        if (std.fs.cwd().openFile(temp_reg, .{}) catch null) |file| {
+            const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+            file.close();
+            
+            var out = try std.fs.cwd().createFile(engine.reg_backup, .{ .read = true, .truncate = false });
+            try out.seekFromEnd(0);
+            try out.writeAll(content);
+            out.close();
+            
+            _ = std.fs.cwd().deleteFile(temp_reg) catch {};
+        }
+        
+        try runCmdNoWindow(allocator, &[_][]const u8{ "reg", "delete", key, "/f" });
     }
 }
 
 fn saveConfig(engine: *Engine, allocator: std.mem.Allocator, exe: []const u8, reg: [][]const u8, folders: []StubbornFolder) !void {
-    _ = allocator; 
-    const config = AppConfig{ .selected_exe = exe, .registry_keys = reg, .stubborn_folders = folders };
-    var out_file = try std.fs.cwd().createFile(engine.cfg_file, .{}); defer out_file.close();
+    _ = allocator;
+    const config = AppConfig{
+        .selected_exe = exe,
+        .registry_keys = reg,
+        .stubborn_folders = folders,
+    };
+    
+    var out_file = try std.fs.cwd().createFile(engine.cfg_file, .{});
+    defer out_file.close();
     try std.json.stringify(config, .{ .whitespace = .indent_4 }, out_file.writer());
+}
+
+fn parseMultiSelect(allocator: std.mem.Allocator, source: anytype, target_list: anytype) !void {
+    _ = allocator;
+    var input_buf: [256]u8 = undefined;
+    const stdin = std.io.getStdIn().reader();
+    if (stdin.readUntilDelimiterOrEof(&input_buf, '\n') catch null) |line| {
+        var it = std.mem.tokenizeScalar(u8, std.mem.trim(u8, line, "\r \t"), ',');
+        while (it.next()) |num_str| {
+            const idx = std.fmt.parseInt(usize, std.mem.trim(u8, num_str, " "), 10) catch continue;
+            if (idx < source.len) {
+                try target_list.append(source[idx]);
+            }
+        }
+    }
 }
