@@ -3,22 +3,17 @@ const windows = std.os.windows;
 
 // --- Win32 API Definitions ---
 extern "kernel32" fn GetConsoleWindow() callconv(.C) ?windows.HWND;
+extern "kernel32" fn FreeConsole() callconv(.C) windows.BOOL;
+extern "kernel32" fn GetCurrentThreadId() callconv(.C) windows.DWORD;
+extern "kernel32" fn AllocConsole() callconv(.C) windows.BOOL;
 extern "user32" fn ShowWindow(hWnd: windows.HWND, nCmdShow: i32) callconv(.C) windows.BOOL;
-extern "kernel32" fn SetConsoleOutputCP(wCodePageID: windows.DWORD) callconv(.C) windows.BOOL;
-extern "kernel32" fn SetEnvironmentVariableA(lpName: [*:0]const u8, lpValue: [*:0]const u8) callconv(.C) windows.BOOL;
-
-// --- Win API Helpers ---
-fn hideConsole() void {
-    if (GetConsoleWindow()) |hwnd| {
-        _ = ShowWindow(hwnd, 0); // 0 = SW_HIDE (Ẩn hoàn toàn khỏi Taskbar)
-    }
-}
-
-fn showConsole() void {
-    if (GetConsoleWindow()) |hwnd| {
-        _ = ShowWindow(hwnd, 5); // 5 = SW_SHOW (Hiện lại)
-    }
-}
+extern "user32" fn SetForegroundWindow(hWnd: windows.HWND) callconv(.C) windows.BOOL;
+extern "user32" fn GetForegroundWindow() callconv(.C) ?windows.HWND;
+extern "user32" fn GetWindowThreadProcessId(hWnd: windows.HWND, lpdwProcessId: ?*windows.DWORD) callconv(.C) windows.DWORD;
+extern "user32" fn AttachThreadInput(idAttach: windows.DWORD, idAttachTo: windows.DWORD, fAttach: windows.BOOL) callconv(.C) windows.BOOL;
+extern "user32" fn AllowSetForegroundWindow(dwProcessId: windows.DWORD) callconv(.C) windows.BOOL;
+// Thêm API chuẩn Unicode để fix lỗi hỏng thư mục (Mojibake / LOCAL)
+extern "kernel32" fn SetEnvironmentVariableW(lpName: [*:0]const u16, lpValue: [*:0]const u16) callconv(.C) windows.BOOL;
 
 const NOISE_KEYWORDS = [_][]const u8{
     "microsoft", "windows", "nvidia", "amd", "intel", "realtek", "cache",
@@ -37,6 +32,42 @@ const AppConfig = struct {
     stubborn_folders: []StubbornFolder,
 };
 
+// --- Win API Helpers ---
+fn hideConsole() void {
+    if (GetConsoleWindow()) |hwnd| {
+        _ = ShowWindow(hwnd, 0); // SW_HIDE
+    }
+}
+
+fn focusConsole() void {
+    _ = AllocConsole();
+    if (GetConsoleWindow()) |hwnd| {
+        var fg_thread: windows.DWORD = 0;
+        if (GetForegroundWindow()) |fg_hwnd| {
+            fg_thread = GetWindowThreadProcessId(fg_hwnd, null);
+        }
+        
+        const current_thread = GetCurrentThreadId();
+        var attached: bool = false;
+        
+        if (fg_thread != current_thread and fg_thread != 0) {
+            attached = AttachThreadInput(fg_thread, current_thread, windows.TRUE) != 0;
+        }
+        
+        _ = ShowWindow(hwnd, 2); // SW_SHOWMINIMIZED
+        _ = ShowWindow(hwnd, 9); // SW_RESTORE
+        _ = SetForegroundWindow(hwnd);
+        
+        if (attached) {
+            _ = AttachThreadInput(fg_thread, current_thread, windows.FALSE);
+        }
+    }
+}
+
+fn grantFocus() void {
+    _ = AllowSetForegroundWindow(0xFFFFFFFF); // ASFW_ANY
+}
+
 // --- Main Engine ---
 const Engine = struct {
     allocator: std.mem.Allocator,
@@ -47,6 +78,7 @@ const Engine = struct {
     pub fn init(allocator: std.mem.Allocator) !Engine {
         const cwd = try std.process.getCwdAlloc(allocator);
         const p_data = try std.fs.path.join(allocator, &[_][]const u8{ cwd, "Portable_Data" });
+        
         const config_dir = try std.fs.path.join(allocator, &[_][]const u8{ p_data, "config" });
         const reg_dir = try std.fs.path.join(allocator, &[_][]const u8{ p_data, "Registry" });
         return Engine{
@@ -71,12 +103,13 @@ const Engine = struct {
         try std.fs.cwd().makePath(local);
         try std.fs.cwd().makePath(docs);
 
-        _ = SetEnvironmentVariableA("APPDATA", try self.allocator.dupeZ(u8, roam));
-        _ = SetEnvironmentVariableA("LOCALAPPDATA", try self.allocator.dupeZ(u8, local));
-        _ = SetEnvironmentVariableA("USERPROFILE", try self.allocator.dupeZ(u8, self.p_data));
-        _ = SetEnvironmentVariableA("DOCUMENTS", try self.allocator.dupeZ(u8, docs));
+        // ĐÃ FIX: Dùng API Unicode để không bao giờ tạo nhầm thư mục rác ra ngoài
+        try setEnvW(self.allocator, "APPDATA", roam);
+        try setEnvW(self.allocator, "LOCALAPPDATA", local);
+        try setEnvW(self.allocator, "USERPROFILE", self.p_data);
+        try setEnvW(self.allocator, "DOCUMENTS", docs);
     }
-
+    
     pub fn getSysRoot(self: *const Engine, tag: []const u8) ![]const u8 {
         if (std.mem.eql(u8, tag, "ROAM")) return std.process.getEnvVarOwned(self.allocator, "APPDATA") catch "";
         if (std.mem.eql(u8, tag, "LOCAL")) return std.process.getEnvVarOwned(self.allocator, "LOCALAPPDATA") catch "";
@@ -98,6 +131,14 @@ const Engine = struct {
         return std.fs.path.join(self.allocator, &[_][]const u8{ self.p_data, "Documents", folder_name });
     }
 };
+
+fn setEnvW(allocator: std.mem.Allocator, name: []const u8, value: []const u8) !void {
+    const name_w = try std.unicode.utf8ToUtf16LeAllocZ(allocator, name);
+    defer allocator.free(name_w);
+    const value_w = try std.unicode.utf8ToUtf16LeAllocZ(allocator, value);
+    defer allocator.free(value_w);
+    _ = SetEnvironmentVariableW(name_w.ptr, value_w.ptr);
+}
 
 fn runCmdNoWindow(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var child = std.process.Child.init(args, allocator);
@@ -122,9 +163,7 @@ pub fn main() !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    // Fix lỗi "Language: 0": Set Codepage im lặng qua API
-    _ = SetConsoleOutputCP(65001);
-
+    // ĐÃ FIX: Xóa lệnh "cmd /c chcp 65001" gây ra chữ Language: 0
     var engine = try Engine.init(allocator);
 
     if (std.fs.cwd().openFile(engine.cfg_file, .{})) |file| {
@@ -140,7 +179,7 @@ pub fn main() !void {
 }
 
 fn learningMode(engine: *Engine, allocator: std.mem.Allocator) !void {
-    // 1. Tự lấy tên chính mình để loại trừ
+    // ĐÃ FIX: Tự động nhận diện tên file của chính nó để loại trừ
     const self_path = try std.fs.selfExePathAlloc(allocator);
     const self_name = std.fs.path.basename(self_path);
 
@@ -149,7 +188,6 @@ fn learningMode(engine: *Engine, allocator: std.mem.Allocator) !void {
     var it = dir.iterate();
     while (try it.next()) |entry| {
         if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".exe")) {
-            // Không hardcode "portable_run.exe" nữa
             if (!std.mem.eql(u8, entry.name, self_name)) {
                 try exes.append(try allocator.dupe(u8, entry.name));
             }
@@ -158,16 +196,19 @@ fn learningMode(engine: *Engine, allocator: std.mem.Allocator) !void {
     dir.close();
 
     if (exes.items.len == 0) {
+        focusConsole();
         std.debug.print("[ERROR] No executable found.\n", .{});
-        return; // Bỏ sleep gây chậm chạp
+        return; // ĐÃ FIX: Xóa sleep 3s gây chậm
     }
 
     try engine.bootstrap();
-
+    
     var selected_exe: []const u8 = "";
     if (exes.items.len == 1) {
+        hideConsole();
         selected_exe = exes.items[0];
     } else {
+        focusConsole();
         std.debug.print("Select target (enter number):\n", .{});
         for (exes.items, 0..) |exe, i| {
             std.debug.print("{d}: {s}\n", .{ i, exe });
@@ -186,6 +227,7 @@ fn learningMode(engine: *Engine, allocator: std.mem.Allocator) !void {
         } else {
             selected_exe = exes.items[0];
         }
+        hideConsole();
     }
 
     var reg_before = std.StringHashMap(void).init(allocator);
@@ -195,17 +237,13 @@ fn learningMode(engine: *Engine, allocator: std.mem.Allocator) !void {
     try snapshotFolders(engine, &folders_before, allocator);
 
     try engine.setupEnv();
-
-    // Ẩn Terminal đi trước khi khởi động Game/App
+    grantFocus();
     hideConsole();
 
-    // Ghép đường dẫn an toàn "./app.exe"
-    const run_path = try std.fs.path.join(allocator, &[_][]const u8{ ".", selected_exe });
-    var child = std.process.Child.init(&[_][]const u8{run_path}, allocator);
+    // Chạy app
+    var child = std.process.Child.init(&[_][]const u8{selected_exe}, allocator);
     _ = try child.spawnAndWait();
-
-    // Hiện lại Terminal sau khi Game tắt để hỏi ý kiến
-    showConsole();
+    // ĐÃ FIX: Xóa sleep 1s gây chậm
 
     var reg_after = std.StringHashMap(void).init(allocator);
     try snapshotRegistry(&reg_after, allocator);
@@ -226,7 +264,9 @@ fn learningMode(engine: *Engine, allocator: std.mem.Allocator) !void {
     while (fold_it.next()) |key| {
         if (!folders_before.contains(key.*) and !containsNoise(key.*)) {
             var split = std.mem.splitScalar(u8, key.*, '|');
-            try stubborn_candidates.append(.{ .tag = split.next().?, .name = split.next().? });
+            const tag = split.next().?;
+            const name = split.next().?;
+            try stubborn_candidates.append(.{ .tag = tag, .name = name });
         }
     }
 
@@ -235,6 +275,7 @@ fn learningMode(engine: *Engine, allocator: std.mem.Allocator) !void {
         return;
     }
 
+    focusConsole();
     var selected_reg = std.ArrayList([]const u8).init(allocator);
     if (reg_candidates.items.len > 0) {
         std.debug.print("\nFound new Registry keys. Keep which ones? (comma separated, e.g. 0,2 or empty for none):\n", .{});
@@ -244,13 +285,16 @@ fn learningMode(engine: *Engine, allocator: std.mem.Allocator) !void {
 
     var selected_folders = std.ArrayList(StubbornFolder).init(allocator);
     if (stubborn_candidates.items.len > 0) {
-        std.debug.print("\nFound new stubborn folders. Keep which ones? (comma separated, e.g. 0,1 or empty for none):\n", .{});
+        std.debug.print("\nFound new stubborn folders. Keep which ones? (comma separated, e.g. 0,1):\n", .{});
         for (stubborn_candidates.items, 0..) |f, i| std.debug.print("{d}: [{s}] {s}\n", .{ i, f.tag, f.name });
-        try parseMultiSelect(allocator, stubborn_candidates.items, &selected_folders);
-
+        
+        var chosen_idx = std.ArrayList([]const u8).init(allocator);
+        try parseMultiSelect(allocator, stubborn_candidates.items, &chosen_idx); 
+        
         for (selected_folders.items) |f| {
             const origin = try std.fs.path.join(allocator, &[_][]const u8{ try engine.getSysRoot(f.tag), f.name });
             const dest = try engine.mapPortPath(f.tag, f.name);
+            
             try std.fs.cwd().makePath(std.fs.path.dirname(dest).?);
             try runCmdNoWindow(allocator, &[_][]const u8{ "robocopy", origin, dest, "/E", "/MOVE", "/NFL", "/NDL", "/NJH", "/NJS", "/R:3", "/W:1" });
         }
@@ -261,15 +305,15 @@ fn learningMode(engine: *Engine, allocator: std.mem.Allocator) !void {
 }
 
 fn runSandbox(engine: *Engine, config: AppConfig) !void {
-    // Ẩn Terminal đi ngay lập tức (Chế độ Sandbox không cần hiện gì cả)
-    hideConsole();
+    // ĐÃ FIX: Giết hẳn Console bằng API để đảm bảo tàng hình 100% như Rust
+    _ = FreeConsole();
 
     try engine.bootstrap();
 
     if (config.registry_keys.len == 0 and config.stubborn_folders.len == 0) {
         try engine.setupEnv();
-        const run_path = try std.fs.path.join(engine.allocator, &[_][]const u8{ ".", config.selected_exe });
-        var child = std.process.Child.init(&[_][]const u8{run_path}, engine.allocator);
+        grantFocus();
+        var child = std.process.Child.init(&[_][]const u8{config.selected_exe}, engine.allocator);
         _ = try child.spawnAndWait();
         return;
     }
@@ -284,7 +328,8 @@ fn runSandbox(engine: *Engine, config: AppConfig) !void {
         const origin = try std.fs.path.join(engine.allocator, &[_][]const u8{ sys_root, f.name });
         const dest = try engine.mapPortPath(f.tag, f.name);
 
-        if (std.fs.cwd().access(origin, .{})) {} else |err| {
+        if (std.fs.cwd().access(origin, .{})) {
+        } else |err| {
             if (err == error.FileNotFound) {
                 try runCmdNoWindow(engine.allocator, &[_][]const u8{ "cmd", "/c", "mklink", "/J", origin, dest });
                 try junctions.append(origin);
@@ -293,9 +338,9 @@ fn runSandbox(engine: *Engine, config: AppConfig) !void {
     }
 
     try engine.setupEnv();
+    grantFocus();
 
-    const run_path = try std.fs.path.join(engine.allocator, &[_][]const u8{ ".", config.selected_exe });
-    var child = std.process.Child.init(&[_][]const u8{run_path}, engine.allocator);
+    var child = std.process.Child.init(&[_][]const u8{config.selected_exe}, engine.allocator);
     _ = try child.spawnAndWait();
 
     for (junctions.items) |j| {
@@ -309,7 +354,7 @@ fn runSandbox(engine: *Engine, config: AppConfig) !void {
 fn snapshotFolders(engine: *Engine, set: *std.StringHashMap(void), allocator: std.mem.Allocator) !void {
     const tags = [_][]const u8{ "ROAM", "LOCAL", "LOW", "DOCS" };
     for (tags) |tag| {
-        const root = try engine.getSysRoot(tag);
+        const root = engine.getSysRoot(tag) catch continue;
         if (root.len == 0) continue;
         
         var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch continue;
@@ -318,9 +363,9 @@ fn snapshotFolders(engine: *Engine, set: *std.StringHashMap(void), allocator: st
         
         while (try it.next()) |entry| {
             if (entry.kind == .directory) {
-                // BỎ QUA THƯ MỤC PORTABLE_DATA CỦA CHÚNG TA (Fix lỗi lặp lại folder)
+                // ĐÃ FIX: Bỏ qua thư mục Portable_Data để chống lặp lại folder
                 if (std.mem.eql(u8, entry.name, "Portable_Data")) continue;
-                
+
                 const key = try std.fmt.allocPrint(allocator, "{s}|{s}", .{ tag, entry.name });
                 try set.put(key, {});
             }
@@ -331,7 +376,6 @@ fn snapshotFolders(engine: *Engine, set: *std.StringHashMap(void), allocator: st
 fn snapshotRegistry(set: *std.StringHashMap(void), allocator: std.mem.Allocator) !void {
     var child = std.process.Child.init(&[_][]const u8{ "reg", "query", "HKCU\\Software" }, allocator);
     child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore; // Bỏ qua lỗi rác
     try child.spawn();
     const stdout = try child.stdout.?.readToEndAlloc(allocator, 1024 * 1024);
     _ = try child.wait();
@@ -353,7 +397,7 @@ fn syncRegistry(engine: *Engine, allocator: std.mem.Allocator, keys: [][]const u
     for (keys) |key| {
         try runCmdNoWindow(allocator, &[_][]const u8{ "reg", "export", key, temp_reg, "/y" });
         
-        if (std.fs.cwd().openFile(temp_reg, .{}) catch null) |file| {
+        if (std.fs.cwd().openFile(temp_reg, .{})) |file| {
             const content = try file.readToEndAlloc(allocator, 1024 * 1024);
             file.close();
             
@@ -363,7 +407,7 @@ fn syncRegistry(engine: *Engine, allocator: std.mem.Allocator, keys: [][]const u
             out.close();
             
             _ = std.fs.cwd().deleteFile(temp_reg) catch {};
-        }
+        } else |_| {}
         
         try runCmdNoWindow(allocator, &[_][]const u8{ "reg", "delete", key, "/f" });
     }
@@ -379,6 +423,7 @@ fn saveConfig(engine: *Engine, allocator: std.mem.Allocator, exe: []const u8, re
     
     var out_file = try std.fs.cwd().createFile(engine.cfg_file, .{});
     defer out_file.close();
+    
     try std.json.stringify(config, .{ .whitespace = .indent_4 }, out_file.writer());
 }
 
