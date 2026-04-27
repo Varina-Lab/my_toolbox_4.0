@@ -1,4 +1,4 @@
-; prime_sieve_extreme_final.asm
+; prime_sieve_final.asm
 OPTION CASEMAP:NONE
 
 extrn GetStdHandle:proc
@@ -30,47 +30,8 @@ hStdOut     QWORD ?
 hStdIn      QWORD ?
 
 .CODE
-
-; --- inline set bit ---
-set_bit PROC idx:QWORD
-    mov rax, idx
-    shr rax, 3
-    mov rcx, idx
-    and cl, 7
-    mov rdx, 1
-    shl dl, cl
-    or BYTE PTR is_prime[rax], dl
-    ret
-set_bit ENDP
-
-; --- inline clear bit ---
-clear_bit PROC idx:QWORD
-    mov rax, idx
-    shr rax, 3
-    mov rcx, idx
-    and cl, 7
-    mov rdx, 1
-    shl dl, cl
-    not dl
-    and BYTE PTR is_prime[rax], dl
-    ret
-clear_bit ENDP
-
-; --- inline test bit ---
-test_bit PROC idx:QWORD
-    mov rax, idx
-    shr rax, 3
-    mov rcx, idx
-    and cl, 7
-    mov dl, BYTE PTR is_prime[rax]
-    shr dl, cl
-    and dl, 1
-    movzx rax, dl
-    ret
-test_bit ENDP
-
 main PROC
-    ; --- Bấm giờ bắt đầu ---
+    ; --- Bấm giờ ---
     call GetTickCount
     mov start_tick, eax
 
@@ -92,19 +53,31 @@ next_p:
     cmp rax, limit
     ja done_sieve
 
-    ; p có phải prime?
-    mov rcx, rbx
-    call test_bit
-    cmp rax, 0
-    je skip_inner
+    ; test prime
+    mov rdx, rbx
+    shr rdx, 1
+    mov rcx, BYTE PTR is_prime[rdx/8]
+    mov r8, rdx
+    and r8, 7
+    mov r9, 1
+    shl r9, cl
+    test rcx, r9
+    jz skip_inner
 
     ; đánh dấu bội số
     mov rsi, rax
 inner_loop:
     cmp rsi, limit
     ja inner_done
-    mov rcx, rsi
-    call clear_bit
+    mov rdx, rsi
+    shr rdx, 1
+    mov rcx, BYTE PTR is_prime[rdx/8]
+    mov r8, rdx
+    and r8, 7
+    mov r9, 1
+    shl r9, cl
+    not r9
+    and BYTE PTR is_prime[rdx/8], r9
     add rsi, rbx*2
     jmp inner_loop
 inner_done:
@@ -121,16 +94,19 @@ count_loop:
     shl rax, 1
     cmp rax, limit
     ja count_done
-    mov rcx, rax
-    call test_bit
-    cmp rax, 0
-    je skip_inc
+    mov rbx, rcx
+    shr rbx, 1
+    mov al, BYTE PTR is_prime[rbx/8]
+    mov bl, 1
+    shl bl, cl
+    test al, bl
+    jz skip_inc
     inc rdx
 skip_inc:
     inc rcx
     jmp count_loop
 count_done:
-    add rdx, 1
+    add rdx, 1          ; cộng prime =2
     mov count, rdx
 
     ; --- Bấm giờ kết thúc ---
@@ -168,6 +144,5 @@ count_done:
     ; --- Exit ---
     xor ecx, ecx
     call ExitProcess
-
 main ENDP
 END main
