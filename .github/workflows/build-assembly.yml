@@ -1,0 +1,33 @@
+name: Build Assembly Tool
+on:
+  workflow_dispatch:
+    inputs:
+      tool_name:
+        description: 'Tên thư mục tool trong assembly/'
+        required: true
+        default: '_template'
+
+jobs:
+  build:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup MSVC Environment
+        uses: ilammy/msvc-dev-cmd@v1
+      
+      - name: Compile and Link Assembly
+        working-directory: assembly/${{ github.event.inputs.tool_name }}
+        run: |
+          # 1. Biên dịch file .asm thành object file (.obj)
+          ml64.exe /c /Cx /W3 main.asm
+          
+          # 2. Liên kết thành file .exe độc lập
+          # Sử dụng msvcrt.lib để xài chung thư viện chuẩn C (printf) có sẵn trên mọi máy Windows
+          link.exe main.obj /SUBSYSTEM:CONSOLE /MACHINE:X64 /OUT:"${{ github.event.inputs.tool_name }}.exe" msvcrt.lib kernel32.lib legacy_stdio_definitions.lib
+          
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.tool_name }}_asm_amd64.exe
+          path: assembly/${{ github.event.inputs.tool_name }}/${{ github.event.inputs.tool_name }}.exe
