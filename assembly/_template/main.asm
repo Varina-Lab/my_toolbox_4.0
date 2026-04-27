@@ -1,12 +1,13 @@
-; prime_sieve_extreme_timer.asm
-; MASM x64 - Sieve cực đại tối ưu, Win32 API thuần, đo thời gian bằng GetTickCount
+; prime_sieve_extreme_fix.asm
 OPTION CASEMAP:NONE
+
 extrn GetStdHandle:proc
 extrn WriteConsoleA:proc
 extrn ReadConsoleA:proc
 extrn ExitProcess:proc
 extrn wsprintfA:proc
 extrn GetTickCount:proc
+extrn lstrlenA:proc
 
 .DATA
 limit       QWORD 10000000
@@ -36,24 +37,24 @@ set_bit MACRO arr, idx
     mov rax, idx
     shr rax, 3
     mov rbx, idx
-    and rbx, 7
-    bts BYTE PTR arr[rax], rbx
+    and bl, 7          ; chỉ 8-bit cho bts
+    bts BYTE PTR arr[rax], bl
 ENDM
 
 clear_bit MACRO arr, idx
     mov rax, idx
     shr rax, 3
     mov rbx, idx
-    and rbx, 7
-    btr BYTE PTR arr[rax], rbx
+    and bl, 7
+    btr BYTE PTR arr[rax], bl
 ENDM
 
 test_bit MACRO arr, idx, out
     mov rax, idx
     shr rax, 3
     mov rbx, idx
-    and rbx, 7
-    bt BYTE PTR arr[rax], rbx
+    and bl, 7
+    bt BYTE PTR arr[rax], bl
     setc out
 ENDM
 
@@ -69,8 +70,6 @@ main PROC
     mov rcx, -10
     call GetStdHandle
     mov hStdIn, rax
-
-    ; --- Khởi tạo bit array --- mặc định 0FFh đã đủ
 
     ; --- 2 là prime ---
     mov count, 1
